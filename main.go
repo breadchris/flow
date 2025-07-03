@@ -15,6 +15,8 @@ import (
 	"github.com/breadchris/flow/db"
 	"github.com/breadchris/flow/deps"
 	"github.com/breadchris/flow/slackbot"
+	"github.com/breadchris/flow/worklet"
+	"github.com/gorilla/mux"
 )
 
 func main() {
@@ -28,17 +30,22 @@ func main() {
 	factory := deps.NewDepsFactory(cfg)
 	dependencies := factory.CreateDeps(database, cfg.ShareDir)
 	
-	// Setup main HTTP mux
-	mux := http.NewServeMux()
+	// Setup main HTTP router
+	router := mux.NewRouter()
 	
 	// Mount coderunner at /coderunner
 	coderunnerMux := coderunner.New(dependencies)
-	mux.Handle("/coderunner/", http.StripPrefix("/coderunner", coderunnerMux))
+	router.PathPrefix("/coderunner/").Handler(http.StripPrefix("/coderunner", coderunnerMux))
+	
+	// Mount worklet API at /api/worklet
+	workletHandler := worklet.NewWorkletHandler(dependencies)
+	workletRouter := router.PathPrefix("/api/worklet").Subrouter()
+	workletHandler.RegisterRoutes(workletRouter)
 	
 	// Create HTTP server
 	server := &http.Server{
 		Addr:    ":8080",
-		Handler: mux,
+		Handler: router,
 	}
 	
 	// Create and start slack bot

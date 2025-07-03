@@ -1,0 +1,25 @@
+{
+  "name": "flow",
+  "version": "1.0.0",
+  "description": "Flow project with protobuf and connectrpc support",
+  "main": "index.js",
+  "scripts": {
+    "generate": "buf generate",
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.4.0",
+    "@connectrpc/connect": "^1.8.0",
+    "@connectrpc/connect-web": "^1.8.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.48.0",
+    "@bufbuild/protoc-gen-es": "^2.4.0",
+    "@connectrpc/protoc-gen-connect-es": "^1.8.0",
+    "typescript": "^5.3.0"
+  },
+  "keywords": ["protobuf", "connectrpc", "typescript", "go"],
+  "author": "",
+  "license": "MIT"
+}

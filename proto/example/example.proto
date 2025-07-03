@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package flow.example;
+
+import "google/protobuf/timestamp.proto";
+
+// ExampleService provides a simple example of a flow service
+service ExampleService {
+  // GetData retrieves data by ID
+  rpc GetData(GetDataRequest) returns (GetDataResponse);
+  
+  // CreateItem creates a new item
+  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);
+  
+  // ListItems lists all items with pagination
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+}
+
+// GetDataRequest is the request for getting data
+message GetDataRequest {
+  string id = 1;
+}
+
+// GetDataResponse is the response for getting data
+message GetDataResponse {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// Item represents a generic item in the flow system
+message Item {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  map<string, string> metadata = 6;
+}
+
+// CreateItemRequest is the request for creating an item
+message CreateItemRequest {
+  string name = 1;
+  string description = 2;
+  map<string, string> metadata = 3;
+}
+
+// CreateItemResponse is the response for creating an item
+message CreateItemResponse {
+  Item item = 1;
+}
+
+// ListItemsRequest is the request for listing items
+message ListItemsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string filter = 3;
+}
+
+// ListItemsResponse is the response for listing items
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
