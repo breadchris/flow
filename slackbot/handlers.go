@@ -44,6 +44,17 @@ func (b *SlackBot) handleFlowCommand(evt *socketmode.Event, cmd *slack.SlashComm
 			"text", cmd.Text)
 	}
 
+	// Check if channel is allowed by whitelist
+	if !b.isChannelAllowed(cmd.ChannelID) {
+		if b.config.Debug {
+			slog.Debug("Flow command rejected - channel not in whitelist",
+				"channel_id", cmd.ChannelID,
+				"user_id", cmd.UserID)
+		}
+		// Silently ignore - no response to avoid revealing bot presence
+		return
+	}
+
 	// Validate that we have content to work with
 	content := strings.TrimSpace(cmd.Text)
 	if content == "" {
@@ -75,7 +86,16 @@ func (b *SlackBot) handleFlowCommand(evt *socketmode.Event, cmd *slack.SlashComm
 	
 	// Create the initial message and thread
 	go func() {
-		// Post initial message to create thread
+		// First, post the user's command text to show what they requested
+		_, _, err := b.client.PostMessage(cmd.ChannelID,
+			slack.MsgOptionText(content, false),
+			slack.MsgOptionAsUser(false), // Show as the user who typed the command
+		)
+		if err != nil {
+			slog.Error("Failed to post user command", "error", err)
+		}
+		
+		// Then post the system response to create the thread
 		_, threadTS, err := b.client.PostMessage(cmd.ChannelID,
 			slack.MsgOptionText(responseText, false),
 			slack.MsgOptionAsUser(true),
@@ -127,6 +147,18 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 		return
 	}
 
+	// Check if channel is allowed by whitelist
+	if !b.isChannelAllowed(ev.Channel) {
+		if b.config.Debug {
+			slog.Debug("Thread message rejected - channel not in whitelist",
+				"channel_id", ev.Channel,
+				"user_id", ev.User,
+				"thread_ts", ev.ThreadTimeStamp)
+		}
+		// Silently ignore - no response to avoid revealing bot presence
+		return
+	}
+
 	// Check if this is a thread we're managing
 	session, exists := b.getSession(ev.ThreadTimeStamp)
 	if !exists {
@@ -150,6 +182,17 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 // handleAppMentionEvent processes app mention events
 func (b *SlackBot) handleAppMentionEvent(ev *slackevents.AppMentionEvent) {
+	// Check if channel is allowed by whitelist
+	if !b.isChannelAllowed(ev.Channel) {
+		if b.config.Debug {
+			slog.Debug("App mention rejected - channel not in whitelist",
+				"channel_id", ev.Channel,
+				"user_id", ev.User)
+		}
+		// Silently ignore - no response to avoid revealing bot presence
+		return
+	}
+
 	// For now, treat app mentions like /flow commands
 	// Remove the bot mention from the text
 	text := strings.TrimSpace(ev.Text)

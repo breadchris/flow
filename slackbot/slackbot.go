@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,15 +20,16 @@ import (
 
 // SlackBot manages Slack interactions and Claude sessions
 type SlackBot struct {
-	client         *slack.Client
-	socketMode     *socketmode.Client
-	claudeService  *claude.Service
-	workletManager *worklet.Manager
-	sessions       map[string]*SlackClaudeSession // thread_ts -> session
-	mu             sync.RWMutex
-	config         *config.SlackBotConfig
-	ctx            context.Context
-	cancel         context.CancelFunc
+	client           *slack.Client
+	socketMode       *socketmode.Client
+	claudeService    *claude.Service
+	workletManager   *worklet.Manager
+	sessions         map[string]*SlackClaudeSession // thread_ts -> session
+	mu               sync.RWMutex
+	config           *config.SlackBotConfig
+	ctx              context.Context
+	cancel           context.CancelFunc
+	whitelistRegexes []*regexp.Regexp // Compiled regex patterns for channel whitelist
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
@@ -84,6 +86,11 @@ func New(d deps.Deps) (*SlackBot, error) {
 		config:         slackConfig,
 		ctx:            ctx,
 		cancel:         cancel,
+	}
+
+	// Compile channel whitelist regex patterns
+	if err := bot.compileWhitelistPatterns(); err != nil {
+		return nil, fmt.Errorf("failed to compile channel whitelist patterns: %w", err)
 	}
 
 	return bot, nil
@@ -236,4 +243,58 @@ func (b *SlackBot) createSessionID(userID string) (string, string) {
 	sessionID := uuid.New().String()
 	correlationID := fmt.Sprintf("slack-%s-%s", userID, sessionID[:8])
 	return sessionID, correlationID
+}
+
+// compileWhitelistPatterns compiles regex patterns for channel whitelist
+func (b *SlackBot) compileWhitelistPatterns() error {
+	if len(b.config.ChannelWhitelist) == 0 {
+		// No whitelist configured - allow all channels
+		return nil
+	}
+
+	b.whitelistRegexes = make([]*regexp.Regexp, 0, len(b.config.ChannelWhitelist))
+
+	for _, pattern := range b.config.ChannelWhitelist {
+		regex, err := regexp.Compile(pattern)
+		if err != nil {
+			return fmt.Errorf("invalid regex pattern '%s': %w", pattern, err)
+		}
+		b.whitelistRegexes = append(b.whitelistRegexes, regex)
+	}
+
+	if b.config.Debug {
+		slog.Debug("Compiled channel whitelist patterns",
+			"patterns", b.config.ChannelWhitelist,
+			"count", len(b.whitelistRegexes))
+	}
+
+	return nil
+}
+
+// isChannelAllowed checks if a channel ID matches the whitelist patterns
+func (b *SlackBot) isChannelAllowed(channelID string) bool {
+	// If no whitelist is configured, allow all channels
+	if len(b.whitelistRegexes) == 0 {
+		return true
+	}
+
+	// Check if channel matches any whitelist pattern
+	for _, regex := range b.whitelistRegexes {
+		if regex.MatchString(channelID) {
+			if b.config.Debug {
+				slog.Debug("Channel allowed by whitelist",
+					"channel_id", channelID,
+					"pattern", regex.String())
+			}
+			return true
+		}
+	}
+
+	if b.config.Debug {
+		slog.Debug("Channel rejected by whitelist",
+			"channel_id", channelID,
+			"whitelist_patterns", b.config.ChannelWhitelist)
+	}
+
+	return false
 }

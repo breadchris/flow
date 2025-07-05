@@ -52,6 +52,7 @@ type SlackBotConfig struct {
 	MaxSessions        int           `json:"max_sessions"`
 	WorkingDirectory   string        `json:"working_directory"`
 	Debug              bool          `json:"debug"`
+	ChannelWhitelist   []string      `json:"channel_whitelist"`
 }
 
 type ClaudeConfig struct {

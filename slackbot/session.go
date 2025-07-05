@@ -2,6 +2,7 @@ package slackbot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -137,17 +138,44 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			// Process different message types - post individual messages for each
 			switch claudeMsg.Type {
 			case "text":
-				// Post text content as individual message
+				// Parse Claude message JSON structure to extract text content
 				if len(claudeMsg.Message) > 0 {
-					textContent := string(claudeMsg.Message)
-					formattedContent := b.formatClaudeResponse(textContent)
+					// Try to parse as Claude message format first
+					var messageContent struct {
+						Content []struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"content"`
+					}
 					
-					_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
-					if err != nil {
-						slog.Error("Failed to post text message", "error", err)
-					} else if b.config.Debug {
-						slog.Debug("Posted text message to Slack", 
-							"content_length", len(textContent))
+					if err := json.Unmarshal(claudeMsg.Message, &messageContent); err == nil {
+						// Successfully parsed Claude message format
+						for _, content := range messageContent.Content {
+							if content.Type == "text" && content.Text != "" {
+								formattedContent := b.formatClaudeResponse(content.Text)
+								_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+								if err != nil {
+									slog.Error("Failed to post parsed text message", "error", err)
+								} else if b.config.Debug {
+									slog.Debug("Posted parsed text message to Slack", 
+										"content_length", len(content.Text))
+								}
+							}
+						}
+					} else {
+						// Fallback to treating the entire message as text content
+						textContent := string(claudeMsg.Message)
+						// Skip empty or very short messages that might be artifacts
+						if len(textContent) > 3 {
+							formattedContent := b.formatClaudeResponse(textContent)
+							_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+							if err != nil {
+								slog.Error("Failed to post fallback text message", "error", err)
+							} else if b.config.Debug {
+								slog.Debug("Posted fallback text message to Slack", 
+									"content_length", len(textContent))
+							}
+						}
 					}
 				}
 
