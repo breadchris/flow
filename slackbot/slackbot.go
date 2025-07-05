@@ -30,6 +30,7 @@ type SlackBot struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	whitelistRegexes []*regexp.Regexp // Compiled regex patterns for channel whitelist
+	wg               sync.WaitGroup   // Wait group for tracking goroutines
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
@@ -101,47 +102,74 @@ func (b *SlackBot) Start(ctx context.Context) error {
 	slog.Info("Starting Slack bot", "debug", b.config.Debug)
 
 	// Start session cleanup goroutine
-	go b.cleanupSessions()
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.cleanupSessions()
+	}()
 
 	// Handle socket mode events
+	b.wg.Add(1)
 	go func() {
-		for evt := range b.socketMode.Events {
-			switch evt.Type {
-			case socketmode.EventTypeConnecting:
-				slog.Info("Slack bot connecting...")
-
-			case socketmode.EventTypeConnectionError:
-				slog.Error("Slack bot connection error", "error", evt.Data)
-
-			case socketmode.EventTypeConnected:
-				slog.Info("Slack bot connected")
-
-			case socketmode.EventTypeSlashCommand:
-				cmd, ok := evt.Data.(slack.SlashCommand)
-				if !ok {
-					slog.Error("Failed to type assert slash command")
-					continue
-				}
-				b.handleSlashCommand(&evt, &cmd)
-
-			case socketmode.EventTypeEventsAPI:
-				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
-				if !ok {
-					slog.Error("Failed to type assert events API event")
-					continue
-				}
-				b.handleEventsAPI(&evt, &eventsAPIEvent)
-
-			default:
+		defer b.wg.Done()
+		defer func() {
+			if b.config.Debug {
+				slog.Debug("Event processing goroutine shutting down")
+			}
+		}()
+		
+		for {
+			select {
+			case <-b.ctx.Done():
 				if b.config.Debug {
-					slog.Debug("Unhandled socket mode event", "type", evt.Type)
+					slog.Debug("Event processing stopped due to context cancellation")
+				}
+				return
+			case evt, ok := <-b.socketMode.Events:
+				if !ok {
+					if b.config.Debug {
+						slog.Debug("Socket mode events channel closed")
+					}
+					return
+				}
+				
+				switch evt.Type {
+				case socketmode.EventTypeConnecting:
+					slog.Info("Slack bot connecting...")
+
+				case socketmode.EventTypeConnectionError:
+					slog.Error("Slack bot connection error", "error", evt.Data)
+
+				case socketmode.EventTypeConnected:
+					slog.Info("Slack bot connected")
+
+				case socketmode.EventTypeSlashCommand:
+					cmd, ok := evt.Data.(slack.SlashCommand)
+					if !ok {
+						slog.Error("Failed to type assert slash command")
+						continue
+					}
+					b.handleSlashCommand(&evt, &cmd)
+
+				case socketmode.EventTypeEventsAPI:
+					eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+					if !ok {
+						slog.Error("Failed to type assert events API event")
+						continue
+					}
+					b.handleEventsAPI(&evt, &eventsAPIEvent)
+
+				default:
+					if b.config.Debug {
+						slog.Debug("Unhandled socket mode event", "type", evt.Type)
+					}
 				}
 			}
 		}
 	}()
 
-	// Start the socket mode client
-	return b.socketMode.Run()
+	// Start the socket mode client with context support
+	return b.socketMode.RunContext(b.ctx)
 }
 
 // Stop gracefully shuts down the bot
@@ -151,6 +179,20 @@ func (b *SlackBot) Stop() error {
 	// Cancel context to stop goroutines
 	b.cancel()
 
+	// Wait for all goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("All SlackBot goroutines stopped gracefully")
+	case <-time.After(10 * time.Second):
+		slog.Warn("Timeout waiting for SlackBot goroutines to stop")
+	}
+
 	// Close all active Claude sessions
 	b.mu.Lock()
 	for _, session := range b.sessions {
@@ -159,6 +201,7 @@ func (b *SlackBot) Stop() error {
 	}
 	b.mu.Unlock()
 
+	slog.Info("Slack bot stopped")
 	return nil
 }
 

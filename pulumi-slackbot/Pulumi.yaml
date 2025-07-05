@@ -1,0 +1,23 @@
+name: slackbot-lambda
+runtime: go
+description: Slackbot Lambda deployment with API Gateway, WebSocket, and Claude integration
+template:
+  config:
+    aws:region:
+      description: AWS region for deployment
+      default: us-east-1
+    slackbot:slackBotToken:
+      description: Slack Bot Token
+      secret: true
+    slackbot:slackSigningSecret:
+      description: Slack Signing Secret
+      secret: true
+    slackbot:claudeApiKey:
+      description: Claude API Key
+      secret: true
+    slackbot:s3Bucket:
+      description: S3 bucket for Claude session uploads
+      default: slackbot-claude-sessions
+    slackbot:workDirectory:
+      description: Working directory for Claude sessions
+      default: /tmp/claude-sessions

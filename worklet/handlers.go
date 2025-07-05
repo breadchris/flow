@@ -39,6 +39,29 @@ func (h *WorkletHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/worklets/{id}/status", h.GetStatus).Methods("GET")
 }
 
+// New returns a *http.ServeMux with worklet routes following the main.go pattern
+func New(deps *deps.Deps) *http.ServeMux {
+	h := NewWorkletHandler(deps)
+	m := http.NewServeMux()
+	
+	// Convert mux.Router patterns to http.ServeMux patterns
+	m.HandleFunc("POST /worklets", h.CreateWorklet)
+	m.HandleFunc("GET /worklets", h.ListWorklets)
+	m.HandleFunc("GET /worklets/{id}", h.GetWorklet)
+	m.HandleFunc("DELETE /worklets/{id}", h.DeleteWorklet)
+	m.HandleFunc("POST /worklets/{id}/start", h.StartWorklet)
+	m.HandleFunc("POST /worklets/{id}/stop", h.StopWorklet)
+	m.HandleFunc("POST /worklets/{id}/restart", h.RestartWorklet)
+	m.HandleFunc("POST /worklets/{id}/prompt", h.ProcessPrompt)
+	m.HandleFunc("POST /worklets/{id}/pr", h.CreatePR)
+	m.HandleFunc("/worklets/{id}/proxy", h.ProxyToWorklet)
+	m.HandleFunc("/worklets/{id}/proxy/{path...}", h.ProxyToWorklet)
+	m.HandleFunc("GET /worklets/{id}/logs", h.GetLogs)
+	m.HandleFunc("GET /worklets/{id}/status", h.GetStatus)
+	
+	return m
+}
+
 func (h *WorkletHandler) CreateWorklet(w http.ResponseWriter, r *http.Request) {
 	var req CreateWorkletRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -87,7 +110,7 @@ func (h *WorkletHandler) ListWorklets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) GetWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	worklet, err := h.manager.GetWorklet(id)
 	if err != nil {
@@ -106,7 +129,7 @@ func (h *WorkletHandler) GetWorklet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) DeleteWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	worklet, err := h.manager.GetWorklet(id)
 	if err != nil {
@@ -129,7 +152,7 @@ func (h *WorkletHandler) DeleteWorklet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) StartWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	if err := h.manager.RestartWorklet(r.Context(), id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to start worklet: %v", err), http.StatusInternalServerError)
@@ -141,7 +164,7 @@ func (h *WorkletHandler) StartWorklet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) StopWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	if err := h.manager.StopWorklet(id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to stop worklet: %v", err), http.StatusInternalServerError)
@@ -153,7 +176,7 @@ func (h *WorkletHandler) StopWorklet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) RestartWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	if err := h.manager.RestartWorklet(r.Context(), id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to restart worklet: %v", err), http.StatusInternalServerError)
@@ -165,7 +188,7 @@ func (h *WorkletHandler) RestartWorklet(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *WorkletHandler) ProcessPrompt(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	var req PromptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -191,7 +214,7 @@ func (h *WorkletHandler) ProcessPrompt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) CreatePR(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	var req struct {
 		Title       string `json:"title"`
@@ -240,7 +263,7 @@ func (h *WorkletHandler) CreatePR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) ProxyToWorklet(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	worklet, err := h.manager.GetWorklet(id)
 	if err != nil {
@@ -257,7 +280,7 @@ func (h *WorkletHandler) ProxyToWorklet(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *WorkletHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	worklet, err := h.manager.GetWorklet(id)
 	if err != nil {
@@ -281,7 +304,7 @@ func (h *WorkletHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WorkletHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := r.PathValue("id")
 	
 	worklet, err := h.manager.GetWorklet(id)
 	if err != nil {

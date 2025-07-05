@@ -129,7 +129,12 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 					"session_id", claudeMsg.SessionID,
 					"message_length", len(claudeMsg.Message),
 					"has_result", claudeMsg.Result != "",
-					"raw_message", string(claudeMsg.Message))
+					"raw_message_preview", func() string {
+						if len(claudeMsg.Message) > 200 {
+							return string(claudeMsg.Message[:200]) + "..."
+						}
+						return string(claudeMsg.Message)
+					}())
 			}
 
 			// Update session activity
@@ -137,6 +142,23 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 
 			// Process different message types - post individual messages for each
 			switch claudeMsg.Type {
+			case "message":
+				// Handle full Claude assistant messages (the main message type)
+				if len(claudeMsg.Message) > 0 {
+					if err := b.parseAndPostClaudeMessage(session, claudeMsg.Message); err != nil {
+						if b.config.Debug {
+							slog.Debug("Failed to parse Claude message, posting as raw text", 
+								"error", err, "message_length", len(claudeMsg.Message))
+						}
+						// Fallback to raw message if parsing fails
+						formattedContent := b.formatClaudeResponse(string(claudeMsg.Message))
+						_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+						if err != nil {
+							slog.Error("Failed to post fallback Claude message", "error", err)
+						}
+					}
+				}
+
 			case "text":
 				// Parse Claude message JSON structure to extract text content
 				if len(claudeMsg.Message) > 0 {
@@ -271,6 +293,62 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			}
 		}
 	}
+}
+
+// parseAndPostClaudeMessage parses a full Claude message and posts the content to Slack
+func (b *SlackBot) parseAndPostClaudeMessage(session *SlackClaudeSession, messageBytes []byte) error {
+	// Parse the full Claude message structure
+	var claudeMessage struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Model   string `json:"model"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		StopReason   *string `json:"stop_reason"`
+		StopSequence *string `json:"stop_sequence"`
+		Usage        *struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			ServiceTier              string `json:"service_tier"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(messageBytes, &claudeMessage); err != nil {
+		return fmt.Errorf("failed to unmarshal Claude message: %w", err)
+	}
+
+	// Only process assistant messages with content
+	if claudeMessage.Role != "assistant" || len(claudeMessage.Content) == 0 {
+		if b.config.Debug {
+			slog.Debug("Skipping non-assistant message or message without content",
+				"role", claudeMessage.Role,
+				"content_length", len(claudeMessage.Content))
+		}
+		return nil
+	}
+
+	// Extract and post each text content block
+	for _, content := range claudeMessage.Content {
+		if content.Type == "text" && content.Text != "" {
+			formattedContent := b.formatClaudeResponse(content.Text)
+			_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+			if err != nil {
+				slog.Error("Failed to post Claude message content", "error", err)
+				return err
+			} else if b.config.Debug {
+				slog.Debug("Posted Claude message content to Slack",
+					"content_length", len(content.Text),
+					"message_id", claudeMessage.ID)
+			}
+		}
+	}
+
+	return nil
 }
 
 // sendToClaudeSession sends a follow-up message to an existing Claude session
