@@ -14,7 +14,7 @@ import (
 
 type Manager struct {
 	db           *gorm.DB
-	deps         *deps.Dependencies
+	deps         *deps.Deps
 	worklets     map[string]*Worklet
 	mu           sync.RWMutex
 	dockerClient *DockerClient
@@ -23,15 +23,15 @@ type Manager struct {
 	claudeClient *ClaudeClient
 }
 
-func NewManager(deps *deps.Dependencies) *Manager {
+func NewManager(deps *deps.Deps) *Manager {
 	return &Manager{
-		db:           deps.Database,
+		db:           deps.DB,
 		deps:         deps,
 		worklets:     make(map[string]*Worklet),
 		dockerClient: NewDockerClient(),
 		gitClient:    NewGitClient(),
 		webServer:    NewWebServer(),
-		claudeClient: NewClaudeClient(deps),
+		claudeClient: NewClaudeClient(),
 	}
 }
 
@@ -208,7 +208,7 @@ func (m *Manager) deployWorklet(ctx context.Context, worklet *Worklet) {
 	worklet.WebURL = fmt.Sprintf("http://localhost:%d", port)
 	
 	if worklet.BasePrompt != "" {
-		if err := m.claudeClient.ApplyPrompt(ctx, repoPath, worklet.BasePrompt, worklet.SessionID); err != nil {
+		if err := m.claudeClient.ApplyPrompt(ctx, repoPath, worklet.BasePrompt); err != nil {
 			slog.Error("Failed to apply base prompt", "error", err, "workletID", worklet.ID)
 		}
 	}
@@ -230,7 +230,7 @@ func (m *Manager) processPromptAsync(ctx context.Context, worklet *Worklet, work
 	
 	repoPath := m.gitClient.GetRepoPath(worklet.GitRepo, worklet.Branch)
 	
-	response, err := m.claudeClient.ProcessPrompt(ctx, repoPath, workletPrompt.Prompt, worklet.SessionID)
+	response, err := m.claudeClient.ProcessPrompt(ctx, repoPath, workletPrompt.Prompt)
 	if err != nil {
 		workletPrompt.Status = "error"
 		workletPrompt.Response = fmt.Sprintf("Failed to process prompt: %v", err)

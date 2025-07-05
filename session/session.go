@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/breadchris/flow/scs"
+	"github.com/breadchris/share/scs"
 	"github.com/pkg/errors"
 )
 

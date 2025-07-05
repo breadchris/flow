@@ -159,10 +159,10 @@ func (d *DockerClient) StopContainer(containerID string) error {
 	}
 	
 	ctx := context.Background()
-	timeout := 10 * time.Second
+	timeoutSeconds := 10
 	
 	return d.client.ContainerStop(ctx, containerID, container.StopOptions{
-		Timeout: &timeout,
+		Timeout: &timeoutSeconds,
 	})
 }
 
@@ -184,10 +184,10 @@ func (d *DockerClient) RestartContainer(containerID string) error {
 	}
 	
 	ctx := context.Background()
-	timeout := 10 * time.Second
+	timeoutSeconds := 10
 	
 	return d.client.ContainerRestart(ctx, containerID, container.StopOptions{
-		Timeout: &timeout,
+		Timeout: &timeoutSeconds,
 	})
 }
 

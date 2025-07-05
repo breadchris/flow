@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"time"
 )
 
 type SMTPConfig struct {
@@ -39,6 +40,37 @@ type ProxyConfig struct {
 	SocksURL string `json:"socks_url"`
 }
 
+type SlackBotConfig struct {
+	Enabled            bool          `json:"enabled"`
+	SlackAppID         string        `json:"app_id"`
+	SlackClientID      string        `json:"client_id"`
+	SlackClientSecret  string        `json:"client_secret"`
+	SlackSigningSecret string        `json:"signing_secret"`
+	SlackToken         string        `json:"token"`
+	BotToken           string        `json:"bot_token"`
+	SessionTimeout     time.Duration `json:"session_timeout"`
+	MaxSessions        int           `json:"max_sessions"`
+	WorkingDirectory   string        `json:"working_directory"`
+	Debug              bool          `json:"debug"`
+}
+
+type ClaudeConfig struct {
+	Debug    bool     `json:"debug"`
+	DebugDir string   `json:"debug_dir"`
+	Tools    []string `json:"tools"`
+}
+
+type WorkletConfig struct {
+	BaseDir       string        `json:"base_dir"`
+	CleanupMaxAge time.Duration `json:"cleanup_max_age"`
+	MaxConcurrent int           `json:"max_concurrent"`
+}
+
+type GitConfig struct {
+	Token   string `json:"github_token"`
+	BaseDir string `json:"base_dir"`
+}
+
 type AppConfig struct {
 	OpenAIKey          string        `json:"openai_key"`
 	SMTP               SMTPConfig    `json:"smtp"`
@@ -59,50 +91,12 @@ type AppConfig struct {
 	JamsocketURL       string        `json:"jamsocket_url"`
 	SupabaseURL        string        `json:"supabase_url"`
 	ClaudeDebug        bool          `json:"claude_debug"`
-}
 
-func NewFromFile(path string) AppConfig {
-	appConfig := AppConfig{
-		SessionSecret: "secret",
-		DB:            "sqlite://data/db.sqlite",
-		DSN:           "sqlite://data/db.sqlite",
-		ShareDir:      "data",
-	}
-
-	configFile, err := os.Open(path)
-	if err != nil {
-		log.Fatalf("Failed to open dbconfig file: %v", err)
-	}
-	defer configFile.Close()
-
-	err = json.NewDecoder(configFile).Decode(&appConfig)
-	if err != nil {
-		log.Fatalf("Failed to decode dbconfig file: %v", err)
-	}
-	return appConfig
-}
-
-func New() AppConfig {
-	appConfig := AppConfig{
-		SessionSecret: "secret",
-		DB:            "sqlite://data/db.sqlite",
-		DSN:           "sqlite://data/db.sqlite",
-		ShareDir:      "data",
-	}
-
-	configFile, err := os.Open("data/config.json")
-	if err != nil {
-		log.Printf("Config file not found, using defaults: %v", err)
-		return appConfig
-	}
-	defer configFile.Close()
-
-	err = json.NewDecoder(configFile).Decode(&appConfig)
-	if err != nil {
-		log.Printf("Failed to decode config file, using defaults: %v", err)
-		return appConfig
-	}
-	return appConfig
+	// New configuration sections
+	SlackBot SlackBotConfig `json:"slack_bot"`
+	Claude   ClaudeConfig   `json:"claude"`
+	Worklet  WorkletConfig  `json:"worklet"`
+	Git      GitConfig      `json:"git"`
 }
 
 func LoadConfig() AppConfig {
@@ -113,17 +107,20 @@ func LoadConfig() AppConfig {
 		ShareDir:      "data",
 	}
 
+	setConfigDefaults(&appConfig)
+
 	configFile, err := os.Open("data/config.json")
 	if err != nil {
 		log.Printf("Config file not found, using defaults: %v", err)
-		return appConfig
+	} else {
+		defer configFile.Close()
+		err = json.NewDecoder(configFile).Decode(&appConfig)
+		if err != nil {
+			log.Printf("Failed to decode config file, using defaults: %v", err)
+		}
 	}
-	defer configFile.Close()
 
-	err = json.NewDecoder(configFile).Decode(&appConfig)
-	if err != nil {
-		log.Printf("Failed to decode config file, using defaults: %v", err)
-		return appConfig
-	}
+	applyEnvOverrides(&appConfig)
+
 	return appConfig
 }

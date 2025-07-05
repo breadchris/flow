@@ -13,10 +13,10 @@ import (
 
 type WorkletHandler struct {
 	manager *Manager
-	deps    *deps.Dependencies
+	deps    *deps.Deps
 }
 
-func NewWorkletHandler(deps *deps.Dependencies) *WorkletHandler {
+func NewWorkletHandler(deps *deps.Deps) *WorkletHandler {
 	return &WorkletHandler{
 		manager: NewManager(deps),
 		deps:    deps,

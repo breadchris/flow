@@ -1,11 +1,16 @@
 package slackbot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"strings"
+	"time"
 
+	"github.com/breadchris/flow/worklet"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -44,17 +49,27 @@ func (b *SlackBot) handleFlowCommand(evt *socketmode.Event, cmd *slack.SlashComm
 	if content == "" {
 		response := map[string]interface{}{
 			"response_type": "ephemeral",
-			"text":          "Please provide a prompt for Claude. Example: `/flow Help me debug this Go code`",
+			"text":          "Please provide a prompt for Claude.\nExamples:\n• `/flow Help me debug this Go code`\n• `/flow https://github.com/user/repo.git Add dark mode support`",
 		}
 		payload, _ := json.Marshal(response)
 		b.socketMode.Ack(*evt.Request, payload)
 		return
 	}
 
+	// Parse the command to check for repository URL
+	repoURL, prompt := b.parseFlowCommand(content)
+	
 	// Send immediate response to acknowledge the command
+	var responseText string
+	if repoURL != "" {
+		responseText = "🚀 Creating worklet for repository..."
+	} else {
+		responseText = "🤖 Starting Claude session..."
+	}
+	
 	response := map[string]interface{}{
 		"response_type": "in_channel",
-		"text":          "🤖 Starting Claude session...",
+		"text":          responseText,
 	}
 	_, _ = json.Marshal(response)
 	
@@ -62,7 +77,7 @@ func (b *SlackBot) handleFlowCommand(evt *socketmode.Event, cmd *slack.SlashComm
 	go func() {
 		// Post initial message to create thread
 		_, threadTS, err := b.client.PostMessage(cmd.ChannelID,
-			slack.MsgOptionText("🤖 Starting Claude session...", false),
+			slack.MsgOptionText(responseText, false),
 			slack.MsgOptionAsUser(true),
 		)
 		if err != nil {
@@ -70,16 +85,13 @@ func (b *SlackBot) handleFlowCommand(evt *socketmode.Event, cmd *slack.SlashComm
 			return
 		}
 
-		// Create Claude session
-		session, err := b.createClaudeSession(cmd.UserID, cmd.ChannelID, threadTS)
-		if err != nil {
-			slog.Error("Failed to create Claude session", "error", err)
-			b.updateMessage(cmd.ChannelID, threadTS, "❌ Failed to start Claude session. Please try again.")
-			return
+		if repoURL != "" {
+			// Repository workflow - create worklet
+			b.handleRepositoryWorkflow(cmd.UserID, cmd.ChannelID, threadTS, repoURL, prompt)
+		} else {
+			// Simple prompt workflow - direct Claude session
+			b.handleSimpleWorkflow(cmd.UserID, cmd.ChannelID, threadTS, content)
 		}
-
-		// Start Claude interaction in the thread
-		b.streamClaudeInteraction(session, content)
 	}()
 }
 
@@ -214,4 +226,243 @@ func (b *SlackBot) postMessage(channel, threadTS, text string) (string, error) {
 	
 	_, timestamp, err := b.client.PostMessage(channel, options...)
 	return timestamp, err
+}
+
+// parseFlowCommand parses the /flow command to extract repository URL and prompt
+func (b *SlackBot) parseFlowCommand(content string) (repoURL, prompt string) {
+	// Regular expression to match GitHub repository URLs
+	repoRegex := regexp.MustCompile(`https://github\.com/[\w\-\.]+/[\w\-\.]+(?:\.git)?`)
+	
+	// Check if content contains a repository URL
+	match := repoRegex.FindString(content)
+	if match != "" {
+		// Found repository URL, extract it and the remaining text as prompt
+		repoURL = match
+		// Remove the repo URL from content to get the prompt
+		prompt = strings.TrimSpace(strings.Replace(content, match, "", 1))
+		
+		// If no prompt provided, use a default
+		if prompt == "" {
+			prompt = "Help me understand and improve this codebase"
+		}
+		
+		return repoURL, prompt
+	}
+	
+	// Check for other git URL patterns (git@github.com, etc.)
+	gitRegex := regexp.MustCompile(`(?:git@github\.com:|https://github\.com/)[\w\-\.]+/[\w\-\.]+(?:\.git)?`)
+	match = gitRegex.FindString(content)
+	if match != "" {
+		repoURL = match
+		prompt = strings.TrimSpace(strings.Replace(content, match, "", 1))
+		if prompt == "" {
+			prompt = "Help me understand and improve this codebase"
+		}
+		return repoURL, prompt
+	}
+	
+	// No repository URL found, treat entire content as prompt
+	return "", content
+}
+
+// handleSimpleWorkflow handles direct Claude sessions without repositories
+func (b *SlackBot) handleSimpleWorkflow(userID, channelID, threadTS, prompt string) {
+	// Create Claude session
+	session, err := b.createClaudeSession(userID, channelID, threadTS)
+	if err != nil {
+		slog.Error("Failed to create Claude session", "error", err)
+		_ = b.updateMessage(channelID, threadTS, "❌ Failed to start Claude session. Please try again.")
+		return
+	}
+
+	// Start Claude interaction in the thread
+	b.streamClaudeInteraction(session, prompt)
+}
+
+// handleRepositoryWorkflow handles worklet creation and repository-based workflows
+func (b *SlackBot) handleRepositoryWorkflow(userID, channelID, threadTS, repoURL, prompt string) {
+	ctx := context.Background()
+	
+	// Update initial message to show progress
+	_ = b.updateMessage(channelID, threadTS, "🔄 Creating worklet...")
+	
+	// Create worklet request
+	workletReq := worklet.CreateWorkletRequest{
+		Name:        fmt.Sprintf("Slack Flow - %s", b.extractRepoName(repoURL)),
+		Description: fmt.Sprintf("Created via Slack /flow command for user %s", userID),
+		GitRepo:     repoURL,
+		Branch:      "main", // Default to main branch
+		BasePrompt:  prompt,
+		Environment: map[string]string{
+			"SLACK_USER_ID":   userID,
+			"SLACK_CHANNEL":   channelID,
+			"SLACK_THREAD_TS": threadTS,
+		},
+	}
+	
+	// Create worklet
+	workletObj, err := b.workletManager.CreateWorklet(ctx, workletReq, userID)
+	if err != nil {
+		slog.Error("Failed to create worklet", "error", err)
+		_ = b.updateMessage(channelID, threadTS, 
+			fmt.Sprintf("❌ Failed to create worklet: %s", err.Error()))
+		return
+	}
+	
+	// Update message with worklet creation success
+	_ = b.updateMessage(channelID, threadTS, 
+		fmt.Sprintf("✅ Worklet created successfully!\n🆔 ID: `%s`\n🔗 Repository: %s\n\n🔄 Building and deploying...", 
+			workletObj.ID, repoURL))
+	
+	// Start monitoring worklet status and update Slack accordingly
+	go b.monitorWorkletProgress(ctx, workletObj.ID, channelID, threadTS, repoURL, prompt)
+}
+
+// extractRepoName extracts the repository name from a Git URL
+func (b *SlackBot) extractRepoName(repoURL string) string {
+	// Parse the URL to extract repository name
+	if u, err := url.Parse(repoURL); err == nil {
+		parts := strings.Split(strings.TrimSuffix(u.Path, ".git"), "/")
+		if len(parts) >= 2 {
+			return parts[len(parts)-1]
+		}
+	}
+	
+	// Fallback: extract from string patterns
+	parts := strings.Split(repoURL, "/")
+	if len(parts) > 0 {
+		name := parts[len(parts)-1]
+		return strings.TrimSuffix(name, ".git")
+	}
+	
+	return "unknown-repo"
+}
+
+// monitorWorkletProgress monitors worklet deployment and updates Slack with progress
+func (b *SlackBot) monitorWorkletProgress(ctx context.Context, workletID, channelID, threadTS, repoURL, prompt string) {
+	// Poll worklet status until it's running or failed
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	
+	timeout := time.After(10 * time.Minute) // 10 minute timeout
+	
+	for {
+		select {
+		case <-timeout:
+			_ = b.updateMessage(channelID, threadTS, 
+				"❌ Worklet deployment timed out after 10 minutes. Please try again.")
+			return
+			
+		case <-ctx.Done():
+			return
+			
+		case <-ticker.C:
+			workletObj, err := b.workletManager.GetWorklet(workletID)
+			if err != nil {
+				slog.Error("Failed to get worklet status", "error", err)
+				continue
+			}
+			
+			switch workletObj.Status {
+			case worklet.StatusRunning:
+				// Worklet is ready, create PR and send link
+				_ = b.updateMessage(channelID, threadTS, 
+					fmt.Sprintf("🎉 Worklet is running!\n🌐 Web URL: <%s>\n\n🔄 Creating pull request...", 
+						workletObj.WebURL))
+				
+				// Create PR for the changes
+				b.createPullRequestForWorklet(ctx, workletObj, channelID, threadTS, prompt)
+				return
+				
+			case worklet.StatusError:
+				errorMsg := "❌ Worklet deployment failed"
+				if workletObj.LastError != "" {
+					errorMsg += fmt.Sprintf(": %s", workletObj.LastError)
+				}
+				_ = b.updateMessage(channelID, threadTS, errorMsg)
+				return
+				
+			case worklet.StatusBuilding:
+				_ = b.updateMessage(channelID, threadTS, 
+					"🔨 Building Docker container...")
+				
+			case worklet.StatusDeploying:
+				_ = b.updateMessage(channelID, threadTS, 
+					"🚀 Deploying worklet...")
+			}
+		}
+	}
+}
+
+// createPullRequestForWorklet creates a pull request for the worklet changes and posts the PR link to Slack
+func (b *SlackBot) createPullRequestForWorklet(ctx context.Context, workletObj *worklet.Worklet, channelID, threadTS, prompt string) {
+	// Generate branch name from prompt
+	branchName := b.generateBranchName(prompt)
+	
+	// Create PR title and description
+	prTitle := fmt.Sprintf("feat: %s", prompt)
+	if len(prTitle) > 72 {
+		prTitle = prTitle[:69] + "..."
+	}
+	
+	prDescription := fmt.Sprintf(`## Changes Made by Claude
+
+**Original Prompt:** %s
+
+**Worklet ID:** %s
+**Repository:** %s
+**Web Preview:** %s
+
+This pull request contains changes generated by Claude in response to the above prompt.
+
+### Summary
+Claude has analyzed the codebase and applied the requested changes. Please review the modifications carefully before merging.
+
+---
+*Generated via Slack /flow command*`, prompt, workletObj.ID, workletObj.GitRepo, workletObj.WebURL)
+
+	// Get worklet manager to access git operations through ClaudeClient
+	// We'll use the worklet's ClaudeClient which has git integration
+	claudeClient := &worklet.ClaudeClient{}
+	
+	// Create PR using the worklet's repository path
+	err := claudeClient.CreatePR(ctx, fmt.Sprintf("/tmp/worklet-repos/%s", workletObj.ID), branchName, prTitle, prDescription)
+	if err != nil {
+		slog.Error("Failed to create PR for worklet", "error", err, "worklet_id", workletObj.ID)
+		_ = b.updateMessage(channelID, threadTS, 
+			fmt.Sprintf("❌ Failed to create pull request: %s\n\n🌐 Worklet URL: <%s>", 
+				err.Error(), workletObj.WebURL))
+		return
+	}
+	
+	// Success! Update message with PR link
+	_ = b.updateMessage(channelID, threadTS, 
+		fmt.Sprintf(`✅ **Pull Request Created Successfully!**
+
+🔗 **Repository:** %s
+🌐 **Worklet Preview:** <%s>
+📝 **PR Title:** %s
+
+The changes have been pushed to a new branch and a pull request has been created. You can review and merge the changes on GitHub.
+
+---
+*Generated via Slack /flow command*`, workletObj.GitRepo, workletObj.WebURL, prTitle))
+}
+
+// generateBranchName creates a git-safe branch name from the prompt
+func (b *SlackBot) generateBranchName(prompt string) string {
+	// Convert to lowercase and replace non-alphanumeric chars with hyphens
+	branchName := strings.ToLower(prompt)
+	branchName = regexp.MustCompile(`[^a-zA-Z0-9\s]+`).ReplaceAllString(branchName, "")
+	branchName = regexp.MustCompile(`\s+`).ReplaceAllString(branchName, "-")
+	branchName = strings.Trim(branchName, "-")
+	
+	// Limit length
+	if len(branchName) > 50 {
+		branchName = branchName[:50]
+		branchName = strings.TrimSuffix(branchName, "-")
+	}
+	
+	// Add prefix to indicate it's from flow
+	return fmt.Sprintf("flow/%s", branchName)
 }

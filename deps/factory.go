@@ -2,8 +2,8 @@ package deps
 
 import (
 	"github.com/breadchris/flow/config"
+	"github.com/breadchris/flow/db"
 	"github.com/breadchris/flow/session"
-	"gorm.io/gorm"
 )
 
 // DepsFactory provides methods to create dependencies
@@ -19,7 +19,10 @@ func NewDepsFactory(config config.AppConfig) *DepsFactory {
 }
 
 // CreateDeps creates a new Deps instance with the provided database
-func (f *DepsFactory) CreateDeps(db *gorm.DB, dir string) Deps {
+func (f *DepsFactory) CreateDeps() Deps {
+	// Setup database
+	database := db.NewClaudeDB(f.config.DSN)
+
 	// Create session manager
 	sessionManager, err := session.New()
 	if err != nil {
@@ -27,10 +30,10 @@ func (f *DepsFactory) CreateDeps(db *gorm.DB, dir string) Deps {
 		// This allows the app to start even if session store initialization fails
 		sessionManager = nil
 	}
-	
+
 	return Deps{
-		Dir:     dir,
-		DB:      db,
+		Dir:     f.config.ShareDir,
+		DB:      database,
 		Config:  f.config,
 		Session: sessionManager,
 	}

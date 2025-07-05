@@ -7,8 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/breadchris/flow/coderunner/claude"
+	"github.com/breadchris/flow/claude"
+	"github.com/breadchris/flow/config"
 	"github.com/breadchris/flow/deps"
+	"github.com/breadchris/flow/worklet"
 	"github.com/google/uuid"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -17,69 +19,71 @@ import (
 
 // SlackBot manages Slack interactions and Claude sessions
 type SlackBot struct {
-	client        *slack.Client
-	socketMode    *socketmode.Client
-	claudeService *claude.ClaudeService
-	sessions      map[string]*SlackClaudeSession // thread_ts -> session
-	mu            sync.RWMutex
-	deps          deps.Deps
-	config        *Config
-	ctx           context.Context
-	cancel        context.CancelFunc
+	client         *slack.Client
+	socketMode     *socketmode.Client
+	claudeService  *claude.Service
+	workletManager *worklet.Manager
+	sessions       map[string]*SlackClaudeSession // thread_ts -> session
+	mu             sync.RWMutex
+	config         *config.SlackBotConfig
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
 type SlackClaudeSession struct {
-	ThreadTS     string    `json:"thread_ts"`
-	ChannelID    string    `json:"channel_id"`
-	UserID       string    `json:"user_id"`
-	SessionID    string    `json:"session_id"`    // Claude session ID
-	ProcessID    string    `json:"process_id"`    // Claude process correlation ID
-	MessageTS    string    `json:"message_ts"`    // Current message being updated
-	LastActivity time.Time `json:"last_activity"`
-	Context      string    `json:"context"` // Working directory context
-	Active       bool      `json:"active"`  // Whether the session is currently active
+	ThreadTS     string          `json:"thread_ts"`
+	ChannelID    string          `json:"channel_id"`
+	UserID       string          `json:"user_id"`
+	SessionID    string          `json:"session_id"` // Claude session ID
+	ProcessID    string          `json:"process_id"` // Claude process correlation ID
+	LastActivity time.Time       `json:"last_activity"`
+	Context      string          `json:"context"` // Working directory context
+	Active       bool            `json:"active"`  // Whether the session is currently active
+	Process      *claude.Process `json:"-"`       // Active Claude process (not serialized)
 }
 
 // New creates a new SlackBot instance
 func New(d deps.Deps) (*SlackBot, error) {
-	config := LoadConfig()
-	
-	if !config.Enabled {
+	slackConfig := d.Config.GetSlackBotConfig()
+	if !d.Config.IsSlackBotEnabled() {
 		return nil, fmt.Errorf("slack bot is disabled")
-	}
-
-	if !config.IsValid() {
-		return nil, fmt.Errorf("invalid slack bot configuration: missing required tokens")
 	}
 
 	// Create Slack client
 	client := slack.New(
-		config.SlackBotToken,
-		slack.OptionDebug(config.Debug),
-		slack.OptionAppLevelToken(config.SlackAppToken),
+		slackConfig.BotToken,
+		slack.OptionDebug(slackConfig.Debug),
+		slack.OptionAppLevelToken(slackConfig.SlackToken),
 	)
-
 	// Create socket mode client
 	socketClient := socketmode.New(
 		client,
-		socketmode.OptionDebug(config.Debug),
+		socketmode.OptionDebug(slackConfig.Debug),
 	)
 
-	// Create Claude service
-	claudeService := claude.NewClaudeService(d)
+	// Create Claude service with appropriate configuration
+	claudeConfig := claude.Config{
+		Debug:    slackConfig.Debug,
+		DebugDir: "/tmp/slackbot-claude",
+		Tools:    []string{"Read", "Write", "Bash"},
+	}
+	claudeService := claude.NewService(claudeConfig)
+
+	// Create worklet manager
+	workletManager := worklet.NewManager(&d)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bot := &SlackBot{
-		client:        client,
-		socketMode:    socketClient,
-		claudeService: claudeService,
-		sessions:      make(map[string]*SlackClaudeSession),
-		deps:          d,
-		config:        config,
-		ctx:           ctx,
-		cancel:        cancel,
+		client:         client,
+		socketMode:     socketClient,
+		claudeService:  claudeService,
+		workletManager: workletManager,
+		sessions:       make(map[string]*SlackClaudeSession),
+		config:         slackConfig,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
 	return bot, nil
@@ -136,10 +140,10 @@ func (b *SlackBot) Start(ctx context.Context) error {
 // Stop gracefully shuts down the bot
 func (b *SlackBot) Stop() error {
 	slog.Info("Stopping Slack bot")
-	
+
 	// Cancel context to stop goroutines
 	b.cancel()
-	
+
 	// Close all active Claude sessions
 	b.mu.Lock()
 	for _, session := range b.sessions {
@@ -147,7 +151,7 @@ func (b *SlackBot) Stop() error {
 		// TODO: Properly close Claude sessions when that API is available
 	}
 	b.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -163,7 +167,7 @@ func (b *SlackBot) getSession(threadTS string) (*SlackClaudeSession, bool) {
 func (b *SlackBot) setSession(threadTS string, session *SlackClaudeSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	// Check max sessions limit
 	if len(b.sessions) >= b.config.MaxSessions {
 		// Remove oldest inactive session
@@ -180,7 +184,7 @@ func (b *SlackBot) setSession(threadTS string, session *SlackClaudeSession) {
 			slog.Info("Removed oldest session to make room for new one", "thread_ts", oldestTS)
 		}
 	}
-	
+
 	b.sessions[threadTS] = session
 }
 
@@ -204,8 +208,8 @@ func (b *SlackBot) cleanupSessions() {
 				if time.Since(session.LastActivity) > b.config.SessionTimeout {
 					delete(b.sessions, threadTS)
 					session.Active = false
-					slog.Info("Cleaned up inactive session", 
-						"thread_ts", threadTS, 
+					slog.Info("Cleaned up inactive session",
+						"thread_ts", threadTS,
 						"session_id", session.SessionID,
 						"idle_time", time.Since(session.LastActivity))
 				}
