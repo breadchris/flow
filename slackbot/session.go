@@ -97,7 +97,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 	for {
 		select {
 		case <-timeout:
-			slog.Error("Claude response timeout", 
+			slog.Error("Claude response timeout",
 				"session_id", session.SessionID,
 				"messages_received", messageCount)
 			_, err := b.postMessage(session.ChannelID, session.ThreadTS, "❌ Claude response timed out. Please try again.")
@@ -115,7 +115,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			if !ok {
 				// Channel closed - Claude finished
 				if b.config.Debug {
-					slog.Debug("Claude message channel closed", 
+					slog.Debug("Claude message channel closed",
 						"session_id", session.SessionID,
 						"total_messages", messageCount)
 				}
@@ -142,23 +142,12 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 
 			// Process different message types - post individual messages for each
 			switch claudeMsg.Type {
+			case "assistant":
+				fallthrough
 			case "message":
-				// Handle full Claude assistant messages (the main message type)
-				if len(claudeMsg.Message) > 0 {
-					if err := b.parseAndPostClaudeMessage(session, claudeMsg.Message); err != nil {
-						if b.config.Debug {
-							slog.Debug("Failed to parse Claude message, posting as raw text", 
-								"error", err, "message_length", len(claudeMsg.Message))
-						}
-						// Fallback to raw message if parsing fails
-						formattedContent := b.formatClaudeResponse(string(claudeMsg.Message))
-						_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
-						if err != nil {
-							slog.Error("Failed to post fallback Claude message", "error", err)
-						}
-					}
-				}
-
+				fallthrough
+			case "user":
+				fallthrough
 			case "text":
 				// Parse Claude message JSON structure to extract text content
 				if len(claudeMsg.Message) > 0 {
@@ -169,7 +158,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 							Text string `json:"text"`
 						} `json:"content"`
 					}
-					
+
 					if err := json.Unmarshal(claudeMsg.Message, &messageContent); err == nil {
 						// Successfully parsed Claude message format
 						for _, content := range messageContent.Content {
@@ -179,7 +168,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 								if err != nil {
 									slog.Error("Failed to post parsed text message", "error", err)
 								} else if b.config.Debug {
-									slog.Debug("Posted parsed text message to Slack", 
+									slog.Debug("Posted parsed text message to Slack",
 										"content_length", len(content.Text))
 								}
 							}
@@ -194,7 +183,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 							if err != nil {
 								slog.Error("Failed to post fallback text message", "error", err)
 							} else if b.config.Debug {
-								slog.Debug("Posted fallback text message to Slack", 
+								slog.Debug("Posted fallback text message to Slack",
 									"content_length", len(textContent))
 							}
 						}
@@ -245,7 +234,7 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 				} else {
 					errorText = "Unknown error occurred"
 				}
-				
+
 				errorMsg := fmt.Sprintf("❌ **Error:** %s", errorText)
 				_, err := b.postMessage(session.ChannelID, session.ThreadTS, errorMsg)
 				if err != nil {
@@ -255,12 +244,21 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			case "completion":
 				// Claude has finished - optionally post completion message
 				if b.config.Debug {
-					slog.Debug("Claude interaction completed", 
+					slog.Debug("Claude interaction completed",
 						"session_id", session.SessionID,
 						"total_messages", messageCount)
 				}
 				// Note: Not posting a completion message to keep the conversation clean
 				return
+
+			//case "result":
+			//	// Handle tool use result messages
+			//	if b.config.Debug {
+			//		slog.Debug("Received tool use result",
+			//			"session_id", session.SessionID,
+			//			"result_length", len(claudeMsg.Result))
+			//	}
+			//	continue
 
 			case "system":
 				// Handle system messages (like init messages)
@@ -273,13 +271,13 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			default:
 				// Handle unknown message types
 				if b.config.Debug {
-					slog.Debug("Unhandled Claude message type", 
+					slog.Debug("Unhandled Claude message type",
 						"type", claudeMsg.Type,
 						"subtype", claudeMsg.Subtype,
 						"message", string(claudeMsg.Message),
 						"result", claudeMsg.Result)
 				}
-				
+
 				// Try to post unknown message types if they have content
 				if len(claudeMsg.Message) > 0 {
 					content := b.formatClaudeResponse(string(claudeMsg.Message))
@@ -293,6 +291,114 @@ func (b *SlackBot) handleClaudeResponseStream(ctx context.Context, process *clau
 			}
 		}
 	}
+}
+
+// parseAndPostAssistantMessage parses a Claude assistant message wrapper and posts the content to Slack
+func (b *SlackBot) parseAndPostAssistantMessage(session *SlackClaudeSession, messageBytes []byte) error {
+	// Parse the assistant message wrapper structure
+	var assistantWrapper struct {
+		ParentUuid  string `json:"parentUuid"`
+		IsSidechain bool   `json:"isSidechain"`
+		UserType    string `json:"userType"`
+		Cwd         string `json:"cwd"`
+		SessionId   string `json:"sessionId"`
+		Version     string `json:"version"`
+		Message     struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Model   string `json:"model"`
+			Content []struct {
+				Type  string                 `json:"type"`
+				Text  string                 `json:"text,omitempty"`
+				ID    string                 `json:"id,omitempty"`
+				Name  string                 `json:"name,omitempty"`
+				Input map[string]interface{} `json:"input,omitempty"`
+			} `json:"content"`
+			StopReason   *string `json:"stop_reason"`
+			StopSequence *string `json:"stop_sequence"`
+			Usage        *struct {
+				InputTokens              int    `json:"input_tokens"`
+				CacheCreationInputTokens int    `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int    `json:"cache_read_input_tokens"`
+				OutputTokens             int    `json:"output_tokens"`
+				ServiceTier              string `json:"service_tier"`
+			} `json:"usage"`
+		} `json:"message"`
+		RequestId string `json:"requestId"`
+		Type      string `json:"type"`
+		Uuid      string `json:"uuid"`
+		Timestamp string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(messageBytes, &assistantWrapper); err != nil {
+		return fmt.Errorf("failed to unmarshal assistant message wrapper: %w", err)
+	}
+
+	// Only process assistant messages with content
+	//if assistantWrapper.Message.Role != "assistant" || len(assistantWrapper.Message.Content) == 0 {
+	//	if b.config.Debug {
+	//		slog.Debug("Skipping non-assistant message or message without content",
+	//			"role", assistantWrapper.Message.Role,
+	//			"content_length", len(assistantWrapper.Message.Content))
+	//	}
+	//	return nil
+	//}
+
+	// Extract and post each content block
+	for _, content := range assistantWrapper.Message.Content {
+		switch content.Type {
+		case "text":
+			if content.Text != "" {
+				formattedContent := b.formatClaudeResponse(content.Text)
+				_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+				if err != nil {
+					slog.Error("Failed to post assistant text content", "error", err)
+					return err
+				} else if b.config.Debug {
+					slog.Debug("Posted assistant text content to Slack",
+						"content_length", len(content.Text),
+						"message_id", assistantWrapper.Message.ID)
+				}
+			}
+
+		case "tool_use":
+			// Handle tool use content (like exit_plan_mode)
+			if content.Name != "" {
+				var toolMessage string
+				if content.Name == "exit_plan_mode" {
+					// Special handling for plan mode - extract the plan text
+					if planInput, ok := content.Input["plan"].(string); ok {
+						toolMessage = fmt.Sprintf("📋 **Plan Created:**\n\n%s", planInput)
+					} else {
+						toolMessage = fmt.Sprintf("🔧 Used tool: **%s**", content.Name)
+					}
+				} else {
+					toolMessage = fmt.Sprintf("🔧 Used tool: **%s**", content.Name)
+				}
+
+				formattedContent := b.formatClaudeResponse(toolMessage)
+				_, err := b.postMessage(session.ChannelID, session.ThreadTS, formattedContent)
+				if err != nil {
+					slog.Error("Failed to post tool use content", "error", err)
+					return err
+				} else if b.config.Debug {
+					slog.Debug("Posted tool use content to Slack",
+						"tool_name", content.Name,
+						"message_id", assistantWrapper.Message.ID)
+				}
+			}
+
+		default:
+			if b.config.Debug {
+				slog.Debug("Unhandled content type in assistant message",
+					"content_type", content.Type,
+					"message_id", assistantWrapper.Message.ID)
+			}
+		}
+	}
+
+	return nil
 }
 
 // parseAndPostClaudeMessage parses a full Claude message and posts the content to Slack
@@ -310,10 +416,10 @@ func (b *SlackBot) parseAndPostClaudeMessage(session *SlackClaudeSession, messag
 		StopReason   *string `json:"stop_reason"`
 		StopSequence *string `json:"stop_sequence"`
 		Usage        *struct {
-			InputTokens              int `json:"input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
+			InputTokens              int    `json:"input_tokens"`
+			CacheCreationInputTokens int    `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int    `json:"cache_read_input_tokens"`
+			OutputTokens             int    `json:"output_tokens"`
 			ServiceTier              string `json:"service_tier"`
 		} `json:"usage"`
 	}
@@ -323,14 +429,14 @@ func (b *SlackBot) parseAndPostClaudeMessage(session *SlackClaudeSession, messag
 	}
 
 	// Only process assistant messages with content
-	if claudeMessage.Role != "assistant" || len(claudeMessage.Content) == 0 {
-		if b.config.Debug {
-			slog.Debug("Skipping non-assistant message or message without content",
-				"role", claudeMessage.Role,
-				"content_length", len(claudeMessage.Content))
-		}
-		return nil
-	}
+	//if claudeMessage.Role != "assistant" || len(claudeMessage.Content) == 0 {
+	//	if b.config.Debug {
+	//		slog.Debug("Skipping non-assistant message or message without content",
+	//			"role", claudeMessage.Role,
+	//			"content_length", len(claudeMessage.Content))
+	//	}
+	//	return nil
+	//}
 
 	// Extract and post each text content block
 	for _, content := range claudeMessage.Content {
