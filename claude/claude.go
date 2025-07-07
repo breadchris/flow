@@ -334,10 +334,30 @@ func (s *Service) CreateSessionWithMultipleDirs(dirs []string) (*Process, error)
 	startTime := time.Now()
 	correlationID := uuid.New().String()
 
+	// Validate that at least one directory is provided for isolation
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("at least one directory must be provided for Claude session isolation")
+	}
+
+	// Ensure the first directory exists and will be used as working directory
+	sessionDir := dirs[0]
+	if sessionDir == "" {
+		return nil, fmt.Errorf("session directory (first directory) cannot be empty")
+	}
+
+	// Validate that the session directory exists and is accessible
+	if _, err := os.Stat(sessionDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("session directory does not exist: %s", sessionDir)
+		}
+		return nil, fmt.Errorf("session directory is not accessible: %s (%w)", sessionDir, err)
+	}
+
 	slog.Info("Creating new Claude CLI session",
 		"correlation_id", correlationID,
 		"debug_mode", s.config.Debug,
 		"directories", dirs,
+		"session_working_dir", sessionDir,
 		"action", "claude_process_start",
 	)
 
@@ -392,10 +412,20 @@ func (s *Service) CreateSessionWithMultipleDirs(dirs []string) (*Process, error)
 		"correlation_id", correlationID,
 		"command", "claude",
 		"args", strings.Join(args, " "),
+		"working_dir", sessionDir,
 		"action", "claude_cmd_prepared",
 	)
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	
+	// Set working directory to the session directory for isolation
+	cmd.Dir = sessionDir
+	
+	slog.Info("Claude CLI will execute from session directory",
+		"correlation_id", correlationID,
+		"working_dir", sessionDir,
+		"action", "claude_working_dir_set",
+	)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -904,8 +934,8 @@ func (cs *ClaudeService) CreateSessionWithPersistence(threadTS, channelID, userI
 			"upload_dir", uploadDir,
 			"error", err,
 			"thread_ts", threadTS)
-		// Continue without upload directory
-		dirs = []string{workingDir}
+		// Continue without upload directory, but keep session directory as primary
+		dirs = []string{sessionDir}
 	}
 
 	// Create the Claude process using the underlying service with multiple directories
@@ -928,6 +958,11 @@ func (cs *ClaudeService) CreateSessionWithPersistence(threadTS, channelID, userI
 
 	// Persist session to database
 	dbSession := &models.ClaudeSession{
+		Model: models.Model{
+			ID:        uuid.NewString(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
 		SessionID: sessionID,
 		UserID:    userID,
 		Title:     fmt.Sprintf("Slack Thread %s", threadTS),

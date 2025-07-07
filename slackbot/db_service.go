@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/breadchris/flow/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -68,6 +69,11 @@ func (s *SessionDBService) SetSession(session *SlackClaudeSession) error {
 	if err == gorm.ErrRecordNotFound {
 		// Create new session
 		dbSession := models.SlackSession{
+			Model: models.Model{
+				ID:        uuid.NewString(),
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			},
 			ThreadTS:     session.ThreadTS,
 			ChannelID:    session.ChannelID,
 			UserID:       session.UserID,
@@ -273,6 +279,11 @@ func (c *ContextDBService) CreateContext(threadTS, channelID, userID, sessionTyp
 	now := time.Now()
 	
 	dbContext := models.ThreadContext{
+		Model: models.Model{
+			ID:        uuid.NewString(),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
 		ThreadTS:       threadTS,
 		ChannelID:      channelID,
 		SessionType:    sessionType,

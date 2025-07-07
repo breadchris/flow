@@ -19,25 +19,27 @@ import (
 
 // SlackBot manages Slack interactions and Claude sessions
 type SlackBot struct {
-	client           *slack.Client
-	socketMode       *socketmode.Client
-	claudeService    *claude.ClaudeService // Updated to use database-integrated service
-	workletManager   *worklet.Manager
-	chatgptService   *ChatGPTService
-	ideationManager  *IdeationManager
-	contextManager   *ContextManager
-	sessionDB        *SessionDBService     // Database service for sessions
-	contextDB        *ContextDBService     // Database service for contexts
-	fileManager      *FileManager          // File management service for uploads
-	rateLimiter      *MessageRateLimiter   // Rate limiter for messages
-	sessions         map[string]*SlackClaudeSession // thread_ts -> session (temporary for process references)
-	mu               sync.RWMutex
-	config           *config.SlackBotConfig
-	appConfig        *config.AppConfig     // Application config for external URL access
-	ctx              context.Context
-	cancel           context.CancelFunc
-	channelWhitelist *ChannelWhitelist     // Channel access control
-	wg               sync.WaitGroup        // Wait group for tracking goroutines
+	client             *slack.Client
+	socketMode         *socketmode.Client
+	claudeService      *claude.ClaudeService // Updated to use database-integrated service
+	workletManager     *worklet.Manager
+	chatgptService     *ChatGPTService
+	ideationManager    *IdeationManager
+	contextManager     *ContextManager
+	sessionDB          *SessionDBService     // Database service for sessions
+	contextDB          *ContextDBService     // Database service for contexts
+	fileManager        *FileManager          // File management service for uploads
+	rateLimiter        *MessageRateLimiter   // Rate limiter for messages
+	sessions           map[string]*SlackClaudeSession // thread_ts -> session (temporary for process references)
+	mu                 sync.RWMutex
+	config             *config.SlackBotConfig
+	appConfig          *config.AppConfig     // Application config for external URL access
+	ctx                context.Context
+	cancel             context.CancelFunc
+	channelWhitelist   *ChannelWhitelist     // Channel access control
+	sessionCache       *SlackBotSessionCache // Session cache
+	sessionActivityMgr *SessionActivityManager // Session activity manager with error handling
+	wg                 sync.WaitGroup        // Wait group for tracking goroutines
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
@@ -112,24 +114,32 @@ func New(d deps.Deps) (*SlackBot, error) {
 		return nil, fmt.Errorf("failed to create channel whitelist: %w", err)
 	}
 
+	// Create session cache
+	sessionCache := NewSlackBotSessionCache()
+
+	// Create session activity manager
+	sessionActivityMgr := NewSessionActivityManager(sessionDB, sessionCache, slackConfig.Debug)
+
 	bot := &SlackBot{
-		client:           client,
-		socketMode:       socketClient,
-		claudeService:    claudeService,
-		workletManager:   workletManager,
-		chatgptService:   chatgptService,
-		ideationManager:  ideationManager,
-		contextManager:   contextManager,
-		sessionDB:        sessionDB,
-		contextDB:        contextDB,
-		fileManager:      fileManager,
-		rateLimiter:      rateLimiter,
-		sessions:         make(map[string]*SlackClaudeSession),
-		config:           slackConfig,
-		appConfig:        &d.Config,
-		ctx:              ctx,
-		cancel:           cancel,
-		channelWhitelist: channelWhitelist,
+		client:             client,
+		socketMode:         socketClient,
+		claudeService:      claudeService,
+		workletManager:     workletManager,
+		chatgptService:     chatgptService,
+		ideationManager:    ideationManager,
+		contextManager:     contextManager,
+		sessionDB:          sessionDB,
+		contextDB:          contextDB,
+		fileManager:        fileManager,
+		rateLimiter:        rateLimiter,
+		sessions:           make(map[string]*SlackClaudeSession),
+		config:             slackConfig,
+		appConfig:          &d.Config,
+		ctx:                ctx,
+		cancel:             cancel,
+		channelWhitelist:   channelWhitelist,
+		sessionCache:       sessionCache,
+		sessionActivityMgr: sessionActivityMgr,
 	}
 
 	return bot, nil
@@ -308,7 +318,11 @@ func (b *SlackBot) setSession(threadTS string, session *SlackClaudeSession) {
 		// Continue with in-memory storage even if database fails
 	}
 
-	// Store in memory for active process reference
+	// Store in new session cache
+	b.sessionCache.SetSession(threadTS, session)
+
+	// Store in legacy memory cache for backward compatibility
+	// TODO: Remove this once all session access goes through the new cache
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -339,7 +353,10 @@ func (b *SlackBot) removeSession(threadTS string) {
 		slog.Error("Failed to remove session from database", "error", err, "thread_ts", threadTS)
 	}
 
-	// Remove from memory cache
+	// Remove from new session cache
+	b.sessionCache.Remove(threadTS)
+
+	// Remove from legacy memory cache
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.sessions, threadTS)
@@ -459,14 +476,21 @@ func (b *SlackBot) cleanupRateLimiter() {
 
 // updateSessionActivity updates the last activity time for a session
 func (b *SlackBot) updateSessionActivity(threadTS string) {
-	// Update in database
-	if err := b.sessionDB.UpdateSessionActivity(threadTS); err != nil {
+	// Use the new session activity manager with proper error handling
+	if err := b.sessionActivityMgr.UpdateActivity(threadTS); err != nil {
+		// SessionActivityManager already handles logging appropriately based on error type
+		// Only log debug info if additional context is helpful
 		if b.config.Debug {
-			slog.Error("Failed to update session activity in database", "error", err, "thread_ts", threadTS)
+			info := b.sessionActivityMgr.GetSessionInfo(threadTS)
+			slog.Debug("Session activity update failed, session info", 
+				"thread_ts", threadTS, 
+				"error", err,
+				"session_info", info)
 		}
 	}
 
-	// Update in memory cache if present
+	// Still update the legacy in-memory cache for backward compatibility
+	// TODO: Remove this once all session access goes through the new cache
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if session, exists := b.sessions[threadTS]; exists {
