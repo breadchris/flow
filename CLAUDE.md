@@ -1,5 +1,5 @@
 You will only create tsx components that have no backend. They will only use react and no other external dependencies.
-Components will be created in ./ and available at https://justshare.io/code/render/data/<session>/<component_name>.tsx
+Components will be created in ./ and available at https://justshare.io/code/render/data/session/<session>/<component_name>.tsx
 
 There is no need to perform research of the existing codebase, you will only create new components based on the provided requirements.
 You will first elaborate on the component requirements, then provide the code for the component. Think about the user experience, functionality, and design. The component should be reusable and maintainable.
