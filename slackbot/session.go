@@ -110,6 +110,32 @@ func (b *SlackBot) resumeOrCreateSession(userID, channelID, threadTS string) (*S
 	}
 
 	// Create new session
+	// Double-check that we don't have a race condition - look for session one more time
+	existingSession, err := b.sessionDB.GetSession(threadTS)
+	if err == nil && existingSession != nil && existingSession.Active {
+		if b.config.Debug {
+			slog.Debug("Found existing session during race condition check",
+				"thread_ts", threadTS,
+				"session_id", existingSession.SessionID)
+		}
+		
+		// Try to resume this session instead of creating a new one
+		process, err := b.claudeService.ResumeSession(existingSession.SessionID, userID)
+		if err == nil {
+			existingSession.Process = process
+			existingSession.Resumed = true
+			existingSession.LastActivity = time.Now()
+			
+			// Store updated session
+			b.setSession(threadTS, existingSession)
+			return existingSession, nil
+		}
+		// If resume fails, continue with creating new session
+		if b.config.Debug {
+			slog.Debug("Failed to resume found session, creating new one", "error", err)
+		}
+	}
+
 	process, newSessionInfo, err := b.claudeService.CreateSessionWithPersistence(threadTS, channelID, userID, b.config.WorkingDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Claude session: %w", err)

@@ -328,6 +328,10 @@ func LoadDB(dsn string) *gorm.DB {
 		&models.SlackUserActivity{},
 		&models.SlackIdeationSession{},
 		&models.SlackFileUpload{},
+		// Session-based key-value store
+		&models.SessionKVStore{},
+		// Deprecated worklet KV store (for backward compatibility)
+		&models.WorkletKVStore{},
 	); err != nil {
 		log.Fatalf("Failed to migrate db: %v", err)
 	}

@@ -26,35 +26,35 @@ type SlackBot struct {
 	chatgptService     *ChatGPTService
 	ideationManager    *IdeationManager
 	contextManager     *ContextManager
-	sessionDB          *SessionDBService     // Database service for sessions
-	contextDB          *ContextDBService     // Database service for contexts
-	fileManager        *FileManager          // File management service for uploads
-	rateLimiter        *MessageRateLimiter   // Rate limiter for messages
+	sessionDB          *SessionDBService              // Database service for sessions
+	contextDB          *ContextDBService              // Database service for contexts
+	fileManager        *FileManager                   // File management service for uploads
+	rateLimiter        *MessageRateLimiter            // Rate limiter for messages
 	sessions           map[string]*SlackClaudeSession // thread_ts -> session (temporary for process references)
 	mu                 sync.RWMutex
 	config             *config.SlackBotConfig
-	appConfig          *config.AppConfig     // Application config for external URL access
+	appConfig          *config.AppConfig // Application config for external URL access
 	ctx                context.Context
 	cancel             context.CancelFunc
-	channelWhitelist   *ChannelWhitelist     // Channel access control
-	sessionCache       *SlackBotSessionCache // Session cache
+	channelWhitelist   *ChannelWhitelist       // Channel access control
+	sessionCache       *SlackBotSessionCache   // Session cache
 	sessionActivityMgr *SessionActivityManager // Session activity manager with error handling
-	wg                 sync.WaitGroup        // Wait group for tracking goroutines
+	wg                 sync.WaitGroup          // Wait group for tracking goroutines
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
 type SlackClaudeSession struct {
-	ThreadTS     string          `json:"thread_ts"`
-	ChannelID    string          `json:"channel_id"`
-	UserID       string          `json:"user_id"`
-	SessionID    string          `json:"session_id"` // Claude session ID
-	ProcessID    string          `json:"process_id"` // Claude process correlation ID
-	LastActivity time.Time       `json:"last_activity"`
-	Context      string          `json:"context"` // Working directory context
-	Active       bool            `json:"active"`  // Whether the session is currently active
-	Resumed      bool            `json:"resumed"` // Whether this session was resumed
-	Process      *claude.Process `json:"-"`       // Active Claude process (not serialized)
-	SessionInfo  *claude.SessionInfo `json:"-"`   // Database session info (not serialized)
+	ThreadTS     string              `json:"thread_ts"`
+	ChannelID    string              `json:"channel_id"`
+	UserID       string              `json:"user_id"`
+	SessionID    string              `json:"session_id"` // Claude session ID
+	ProcessID    string              `json:"process_id"` // Claude process correlation ID
+	LastActivity time.Time           `json:"last_activity"`
+	Context      string              `json:"context"` // Working directory context
+	Active       bool                `json:"active"`  // Whether the session is currently active
+	Resumed      bool                `json:"resumed"` // Whether this session was resumed
+	Process      *claude.Process     `json:"-"`       // Active Claude process (not serialized)
+	SessionInfo  *claude.SessionInfo `json:"-"`       // Database session info (not serialized)
 }
 
 // New creates a new SlackBot instance
@@ -102,7 +102,7 @@ func New(d deps.Deps) (*SlackBot, error) {
 	sessionDB := NewSessionDBService(d.DB, slackConfig.Debug)
 	contextDB := NewContextDBService(d.DB, slackConfig.Debug)
 	fileManager := NewFileManager(d.DB, slackConfig.Debug, 7*24*time.Hour) // Keep files for 7 days
-	rateLimiter := NewMessageRateLimiter(10, 1*time.Minute) // 10 messages per minute per user
+	rateLimiter := NewMessageRateLimiter(10, 1*time.Minute)                // 10 messages per minute per user
 
 	contextManager := NewContextManager(chatgptService, contextConfig, contextDB, slackConfig.Debug)
 
@@ -192,7 +192,7 @@ func (b *SlackBot) Start(ctx context.Context) error {
 				slog.Debug("Event processing goroutine shutting down")
 			}
 		}()
-		
+
 		for {
 			select {
 			case <-b.ctx.Done():
@@ -207,7 +207,9 @@ func (b *SlackBot) Start(ctx context.Context) error {
 					}
 					return
 				}
-				
+
+				slog.Debug("Received socket mode event", "type", evt.Type, "data", evt.Data)
+
 				switch evt.Type {
 				case socketmode.EventTypeConnecting:
 					slog.Info("Slack bot connecting...")
@@ -482,8 +484,8 @@ func (b *SlackBot) updateSessionActivity(threadTS string) {
 		// Only log debug info if additional context is helpful
 		if b.config.Debug {
 			info := b.sessionActivityMgr.GetSessionInfo(threadTS)
-			slog.Debug("Session activity update failed, session info", 
-				"thread_ts", threadTS, 
+			slog.Debug("Session activity update failed, session info",
+				"thread_ts", threadTS,
 				"error", err,
 				"session_info", info)
 		}

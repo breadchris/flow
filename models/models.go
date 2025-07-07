@@ -550,7 +550,19 @@ type PinnedFile struct {
 	User     *User  `gorm:"foreignKey:UserID"`
 }
 
+// SessionKVStore represents key-value data for session-based prototypes
+type SessionKVStore struct {
+	Model
+	SessionID string                             `json:"session_id" gorm:"index;not null"`
+	Namespace string                             `json:"namespace" gorm:"not null;default:'default'"`
+	Key       string                             `json:"key" gorm:"not null"`
+	Value     *JSONField[map[string]interface{}] `json:"value" gorm:"type:jsonb;not null"`
+	// Composite unique constraint: session_id + namespace + key
+	// This ensures no key collisions within the same session and namespace
+}
+
 // WorkletKVStore represents key-value data for worklet prototypes
+// DEPRECATED: Use SessionKVStore instead
 type WorkletKVStore struct {
 	Model
 	WorkletID string                             `json:"worklet_id" gorm:"index;not null"`
@@ -586,14 +598,38 @@ func (kv *WorkletKVStore) ToEntry() WorkletKVEntry {
 	}
 }
 
+// NewSessionKVStore creates a new SessionKVStore entry
+func NewSessionKVStore(sessionID, namespace, key string, value map[string]interface{}) *SessionKVStore {
+	if namespace == "" {
+		namespace = "default"
+	}
+	
+	return &SessionKVStore{
+		Model: Model{
+			ID:        uuid.New().String(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		SessionID: sessionID,
+		Namespace: namespace,
+		Key:       key,
+		Value:     MakeJSONField(value),
+	}
+}
+
 // NewWorkletKVStore creates a new WorkletKVStore entry
+// DEPRECATED: Use NewSessionKVStore instead
 func NewWorkletKVStore(workletID, namespace, key string, value map[string]interface{}) *WorkletKVStore {
 	if namespace == "" {
 		namespace = "default"
 	}
 	
 	return &WorkletKVStore{
-		Model:     Model{ID: uuid.New().String()},
+		Model: Model{
+			ID:        uuid.New().String(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
 		WorkletID: workletID,
 		Namespace: namespace,
 		Key:       key,

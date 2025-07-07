@@ -190,19 +190,19 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 		timeToReset := time.Until(resetTime)
 		minutes := int(timeToReset.Minutes())
 		seconds := int(timeToReset.Seconds()) % 60
-		
+
 		var resetMessage string
 		if minutes > 0 {
 			resetMessage = fmt.Sprintf("⏱️ _Rate limit exceeded. Please wait %dm %ds before sending another message._", minutes, seconds)
 		} else {
 			resetMessage = fmt.Sprintf("⏱️ _Rate limit exceeded. Please wait %ds before sending another message._", seconds)
 		}
-		
+
 		_, err := b.postMessage(ev.Channel, ev.ThreadTimeStamp, resetMessage)
 		if err != nil {
 			slog.Error("Failed to post rate limit message", "error", err)
 		}
-		
+
 		if b.config.Debug {
 			slog.Debug("Message rate limited",
 				"user_id", ev.User,
@@ -237,22 +237,48 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 			// This is an ideation thread but not a /flow command, ignore
 			return
 		}
-		
-		// No active session found - provide helpful feedback
+
+		// Try to resume/create a session before giving up
 		if b.config.Debug {
-			slog.Debug("No active session found for thread message",
+			slog.Debug("No active session found in memory, attempting to resume",
 				"thread_ts", ev.ThreadTimeStamp,
 				"user_id", ev.User,
 				"channel_id", ev.Channel)
 		}
-		
-		// Check if user is trying to continue a conversation in an old thread
-		_, err := b.postMessage(ev.Channel, ev.ThreadTimeStamp, 
-			"💡 _No active Claude session in this thread. Use `/flow <your message>` to start a new conversation._")
+
+		// Attempt to resume or create session (this checks database too)
+		resumedSession, err := b.resumeOrCreateSession(ev.User, ev.Channel, ev.ThreadTimeStamp)
 		if err != nil {
-			slog.Error("Failed to post no session message", "error", err)
+			if b.config.Debug {
+				slog.Debug("Failed to resume session for thread message",
+					"thread_ts", ev.ThreadTimeStamp,
+					"error", err)
+			}
+			// Check if user is trying to continue a conversation in an old thread
+			_, err := b.postMessage(ev.Channel, ev.ThreadTimeStamp,
+				"💡 _No active Claude session in this thread. Use `/flow <your message>` to start a new conversation._")
+			if err != nil {
+				slog.Error("Failed to post no session message", "error", err)
+			}
+			return
 		}
-		return
+
+		// Successfully resumed/created session
+		session = resumedSession
+		if b.config.Debug {
+			slog.Debug("Successfully resumed session for thread message",
+				"thread_ts", ev.ThreadTimeStamp,
+				"session_id", session.SessionID,
+				"resumed", session.Resumed)
+		}
+
+		// Post a notification about resumption if this was an existing session
+		if session.Resumed {
+			_, err := b.postMessage(ev.Channel, ev.ThreadTimeStamp, "🔄 _Resuming Claude session..._")
+			if err != nil {
+				slog.Error("Failed to post resumption notification", "error", err)
+			}
+		}
 	}
 
 	// Validate and preprocess the message
@@ -1291,9 +1317,9 @@ func (b *SlackBot) handleFileSharedEvent(ev *slackevents.FileSharedEvent) {
 			"file_id", ev.FileID,
 			"mimetype", file.Mimetype,
 			"thread_ts", threadTS)
-		
+
 		// Optionally notify user about unsupported file type
-		_, err := b.postMessage(ev.ChannelID, threadTS, 
+		_, err := b.postMessage(ev.ChannelID, threadTS,
 			fmt.Sprintf("⚠️ Uploaded file '%s' is not a supported image format. Supported formats: PNG, JPG, JPEG, GIF, WebP", file.Name))
 		if err != nil {
 			slog.Error("Failed to post unsupported file message", "error", err)
@@ -1309,12 +1335,12 @@ func (b *SlackBot) handleFileSharedEvent(ev *slackevents.FileSharedEvent) {
 func (b *SlackBot) isImageFile(mimetype string) bool {
 	supportedTypes := []string{
 		"image/png",
-		"image/jpeg", 
+		"image/jpeg",
 		"image/jpg",
 		"image/gif",
 		"image/webp",
 	}
-	
+
 	for _, supportedType := range supportedTypes {
 		if mimetype == supportedType {
 			return true
@@ -1419,7 +1445,7 @@ func (b *SlackBot) downloadAndStoreFile(file *slack.File, userID, channelID, thr
 	b.notifyClaudeAboutFile(filename, channelID, threadTS)
 
 	// Send confirmation to user
-	message := fmt.Sprintf("✅ Image uploaded successfully: `%s` (%d bytes)\nClaude can now analyze this image!", 
+	message := fmt.Sprintf("✅ Image uploaded successfully: `%s` (%d bytes)\nClaude can now analyze this image!",
 		filename, bytesWritten)
 	_, err = b.postMessage(channelID, threadTS, message)
 	if err != nil {
@@ -1444,14 +1470,14 @@ func (b *SlackBot) notifyClaudeAboutFile(filename, channelID, threadTS string) {
 	// Since Claude CLI doesn't support dynamic directory addition to running sessions,
 	// we ensure the upload directory will be included when the session is next resumed
 	if err := b.addUploadDirectoryToSession(session.SessionID, threadTS); err != nil {
-		slog.Error("Failed to add upload directory to session metadata", 
+		slog.Error("Failed to add upload directory to session metadata",
 			"error", err, "session_id", session.SessionID, "thread_ts", threadTS)
 	}
 
 	// Send notification message to Claude
-	notificationMessage := fmt.Sprintf("A new image has been uploaded to this conversation: %s. You can now analyze this image using your Read tool with the file path: ./data/slack-uploads/%s/%s", 
+	notificationMessage := fmt.Sprintf("A new image has been uploaded to this conversation: %s. You can now analyze this image using your Read tool with the file path: ./data/slack-uploads/%s/%s",
 		filename, threadTS, filename)
-	
+
 	// Update session activity
 	b.updateSessionActivity(threadTS)
 
@@ -1528,7 +1554,7 @@ func (b *SlackBot) recordFileUpload(file *slack.File, filename, localPath, userI
 		DownloadedAt: &time.Time{}, // Set to current time
 		SessionID:    sessionID,
 	}
-	
+
 	// Set DownloadedAt to current time
 	now := time.Now()
 	fileUpload.DownloadedAt = &now
@@ -1568,7 +1594,7 @@ func NewFileManager(db *gorm.DB, debug bool, maxAge time.Duration) *FileManager 
 // CleanupOldFiles removes old uploaded files from both filesystem and database
 func (fm *FileManager) CleanupOldFiles() error {
 	cutoffTime := time.Now().Add(-fm.maxAge)
-	
+
 	// Find old file uploads
 	var oldFiles []models.SlackFileUpload
 	err := fm.db.Where("uploaded_at < ?", cutoffTime).Find(&oldFiles).Error
@@ -1588,8 +1614,8 @@ func (fm *FileManager) CleanupOldFiles() error {
 		// Remove physical file
 		if err := os.Remove(fileUpload.LocalPath); err != nil {
 			if !os.IsNotExist(err) {
-				slog.Error("Failed to remove physical file", 
-					"file_path", fileUpload.LocalPath, 
+				slog.Error("Failed to remove physical file",
+					"file_path", fileUpload.LocalPath,
 					"error", err)
 				continue // Skip database deletion if file removal failed
 			}
@@ -1598,8 +1624,8 @@ func (fm *FileManager) CleanupOldFiles() error {
 
 		// Remove database record
 		if err := fm.db.Delete(&fileUpload).Error; err != nil {
-			slog.Error("Failed to remove file record from database", 
-				"file_id", fileUpload.SlackFileID, 
+			slog.Error("Failed to remove file record from database",
+				"file_id", fileUpload.SlackFileID,
 				"error", err)
 			continue
 		}
@@ -1623,7 +1649,7 @@ func (fm *FileManager) CleanupOldFiles() error {
 // CleanupEmptyDirectories removes empty upload directories
 func (fm *FileManager) CleanupEmptyDirectories() error {
 	uploadBaseDir := "./data/slack-uploads"
-	
+
 	// Check if base directory exists
 	if _, err := os.Stat(uploadBaseDir); os.IsNotExist(err) {
 		return nil // Nothing to cleanup
@@ -1641,7 +1667,7 @@ func (fm *FileManager) CleanupEmptyDirectories() error {
 		}
 
 		dirPath := filepath.Join(uploadBaseDir, entry.Name())
-		
+
 		// Check if directory is empty
 		dirEntries, err := os.ReadDir(dirPath)
 		if err != nil {
@@ -1655,7 +1681,7 @@ func (fm *FileManager) CleanupEmptyDirectories() error {
 				slog.Error("Failed to remove empty directory", "path", dirPath, "error", err)
 				continue
 			}
-			
+
 			removedDirs++
 			if fm.debug {
 				slog.Debug("Removed empty upload directory", "path", dirPath)
@@ -1673,8 +1699,8 @@ func (fm *FileManager) CleanupEmptyDirectories() error {
 // GetFileUploadStats returns statistics about uploaded files
 func (fm *FileManager) GetFileUploadStats() (map[string]interface{}, error) {
 	var stats struct {
-		TotalFiles    int64 `json:"total_files"`
-		TotalSize     int64 `json:"total_size_bytes"`
+		TotalFiles      int64 `json:"total_files"`
+		TotalSize       int64 `json:"total_size_bytes"`
 		DownloadedFiles int64 `json:"downloaded_files"`
 		ActiveSessions  int64 `json:"files_with_active_sessions"`
 	}
@@ -1700,10 +1726,10 @@ func (fm *FileManager) GetFileUploadStats() (map[string]interface{}, error) {
 	}
 
 	result := map[string]interface{}{
-		"total_files":               stats.TotalFiles,
-		"total_size_bytes":         stats.TotalSize,
-		"total_size_mb":            float64(stats.TotalSize) / (1024 * 1024),
-		"downloaded_files":         stats.DownloadedFiles,
+		"total_files":                stats.TotalFiles,
+		"total_size_bytes":           stats.TotalSize,
+		"total_size_mb":              float64(stats.TotalSize) / (1024 * 1024),
+		"downloaded_files":           stats.DownloadedFiles,
 		"files_with_active_sessions": stats.ActiveSessions,
 	}
 
@@ -1750,14 +1776,14 @@ func (b *SlackBot) preprocessMessage(text, userID string) (string, error) {
 func (b *SlackBot) cleanSlackFormatting(text string) string {
 	// Convert Slack formatting to markdown-like format
 	// *bold* stays the same
-	// _italic_ stays the same  
+	// _italic_ stays the same
 	// `code` stays the same
 	// ```code block``` stays the same
-	
+
 	// Remove Slack's special formatting that Claude doesn't need
 	// Remove <!here>, <!channel>, <!everyone>
 	text = regexp.MustCompile(`<!(?:here|channel|everyone)>`).ReplaceAllString(text, "")
-	
+
 	return text
 }
 
@@ -1765,22 +1791,22 @@ func (b *SlackBot) cleanSlackFormatting(text string) string {
 func (b *SlackBot) expandUserMentions(text string) string {
 	// Pattern to match <@USERID> or <@USERID|username>
 	mentionPattern := regexp.MustCompile(`<@([A-Z0-9]+)(?:\|([^>]+))?>`)
-	
+
 	return mentionPattern.ReplaceAllStringFunc(text, func(match string) string {
 		matches := mentionPattern.FindStringSubmatch(match)
 		if len(matches) >= 2 {
 			userID := matches[1]
-			
+
 			// If we have a username in the mention, use it
 			if len(matches) >= 3 && matches[2] != "" {
 				return "@" + matches[2]
 			}
-			
+
 			// Try to get user info from Slack API
 			if user, err := b.client.GetUserInfo(userID); err == nil {
 				return "@" + user.Name
 			}
-			
+
 			// Fallback to generic mention
 			return "@user"
 		}
@@ -1792,24 +1818,24 @@ func (b *SlackBot) expandUserMentions(text string) string {
 func (b *SlackBot) expandChannelMentions(text string) string {
 	// Pattern to match <#CHANNELID> or <#CHANNELID|channelname>
 	channelPattern := regexp.MustCompile(`<#([A-Z0-9]+)(?:\|([^>]+))?>`)
-	
+
 	return channelPattern.ReplaceAllStringFunc(text, func(match string) string {
 		matches := channelPattern.FindStringSubmatch(match)
 		if len(matches) >= 2 {
 			channelID := matches[1]
-			
+
 			// If we have a channel name in the mention, use it
 			if len(matches) >= 3 && matches[2] != "" {
 				return "#" + matches[2]
 			}
-			
+
 			// Try to get channel info from Slack API
 			if channel, err := b.client.GetConversationInfo(&slack.GetConversationInfoInput{
 				ChannelID: channelID,
 			}); err == nil {
 				return "#" + channel.Name
 			}
-			
+
 			// Fallback to generic mention
 			return "#channel"
 		}
@@ -1821,17 +1847,17 @@ func (b *SlackBot) expandChannelMentions(text string) string {
 func (b *SlackBot) cleanSlackLinks(text string) string {
 	// Pattern to match <URL|text> or <URL>
 	linkPattern := regexp.MustCompile(`<(https?://[^|>]+)(?:\|([^>]+))?>`)
-	
+
 	return linkPattern.ReplaceAllStringFunc(text, func(match string) string {
 		matches := linkPattern.FindStringSubmatch(match)
 		if len(matches) >= 2 {
 			url := matches[1]
-			
+
 			// If we have link text, use it with the URL
 			if len(matches) >= 3 && matches[2] != "" {
 				return fmt.Sprintf("%s (%s)", matches[2], url)
 			}
-			
+
 			// Just return the URL
 			return url
 		}
@@ -1841,15 +1867,15 @@ func (b *SlackBot) cleanSlackLinks(text string) string {
 
 // MessageRateLimiter manages rate limiting for user messages
 type MessageRateLimiter struct {
-	mu       sync.RWMutex
-	userLimits map[string]*UserRateLimit
+	mu          sync.RWMutex
+	userLimits  map[string]*UserRateLimit
 	maxMessages int           // Maximum messages per window
 	window      time.Duration // Time window for rate limiting
 }
 
 // UserRateLimit tracks rate limiting for a specific user
 type UserRateLimit struct {
-	messages   []time.Time
+	messages    []time.Time
 	lastCleanup time.Time
 }
 
@@ -1868,12 +1894,12 @@ func (rl *MessageRateLimiter) CheckRateLimit(userID string) (allowed bool, reset
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	
+
 	// Get or create user limit
 	userLimit, exists := rl.userLimits[userID]
 	if !exists {
 		userLimit = &UserRateLimit{
-			messages:   make([]time.Time, 0),
+			messages:    make([]time.Time, 0),
 			lastCleanup: now,
 		}
 		rl.userLimits[userID] = userLimit
@@ -1919,7 +1945,7 @@ func (rl *MessageRateLimiter) GetUserStats(userID string) (messageCount int, tim
 
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
-	
+
 	// Count valid messages
 	validCount := 0
 	var earliestValidMsg time.Time
@@ -2001,7 +2027,7 @@ func (b *SlackBot) showTypingIndicator(channelID, threadTS string) {
 
 	// Wait a bit, then remove the typing indicator
 	time.Sleep(2 * time.Second)
-	
+
 	// Delete the typing indicator message
 	_, _, err = b.client.DeleteMessage(channelID, timestamp)
 	if err != nil {

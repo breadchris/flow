@@ -1234,13 +1234,28 @@ func (cs *ClaudeService) createResumedProcessWithDirs(sessionID string, dirs []s
 
 // GetSessionInfo retrieves session information from database
 func (cs *ClaudeService) GetSessionInfo(threadTS, userID string) (*SessionInfo, error) {
-	var dbSession models.ClaudeSession
-	err := cs.db.Where("user_id = ?", userID).First(&dbSession, "JSON_EXTRACT(metadata, '$.thread_ts') = ?", threadTS).Error
+	var dbSessions []models.ClaudeSession
+	err := cs.db.Where("user_id = ?", userID).Find(&dbSessions).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil // No session found
+		return nil, fmt.Errorf("failed to query sessions by user: %w", err)
+	}
+
+	// Find session with matching thread_ts in metadata
+	var dbSession *models.ClaudeSession
+	for _, session := range dbSessions {
+		if session.Metadata != nil {
+			metadata := session.Metadata.Data
+			if ts, exists := metadata["thread_ts"]; exists {
+				if tsStr, ok := ts.(string); ok && tsStr == threadTS {
+					dbSession = &session
+					break
+				}
+			}
 		}
-		return nil, fmt.Errorf("failed to query session by thread: %w", err)
+	}
+
+	if dbSession == nil {
+		return nil, nil // No session found
 	}
 
 	// Extract metadata

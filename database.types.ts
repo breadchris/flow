@@ -1268,6 +1268,36 @@ export type Database = {
         }
         Relationships: []
       }
+      session_kv_store: {
+        Row: {
+          created_at: string | null
+          id: string
+          key: string
+          namespace: string
+          session_id: string
+          updated_at: string | null
+          value: Json
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          key: string
+          namespace?: string
+          session_id: string
+          updated_at?: string | null
+          value: Json
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          key?: string
+          namespace?: string
+          session_id?: string
+          updated_at?: string | null
+          value?: Json
+        }
+        Relationships: []
+      }
       users: {
         Row: {
           created_at: string | null
