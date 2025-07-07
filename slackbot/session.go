@@ -13,30 +13,151 @@ import (
 
 // createClaudeSession initializes a new Claude session for a Slack thread
 func (b *SlackBot) createClaudeSession(userID, channelID, threadTS string) (*SlackClaudeSession, error) {
-	sessionID, correlationID := b.createSessionID(userID)
+	return b.resumeOrCreateSession(userID, channelID, threadTS)
+}
+
+// resumeOrCreateSession attempts to resume an existing session or creates a new one
+func (b *SlackBot) resumeOrCreateSession(userID, channelID, threadTS string) (*SlackClaudeSession, error) {
 	if err := os.MkdirAll(b.config.WorkingDirectory, 0755); err != nil && !os.IsExist(err) {
 		return nil, fmt.Errorf("failed to ensure working directory: %w", err)
 	}
+
+	// First, try to find existing session in database
+	sessionInfo, err := b.claudeService.GetSessionInfo(threadTS, userID)
+	if err != nil {
+		slog.Error("Failed to query existing session", "error", err, "thread_ts", threadTS)
+		// Continue to create new session
+	}
+
+	if sessionInfo != nil && sessionInfo.Active {
+		// Try to resume existing session
+		if b.config.Debug {
+			slog.Debug("Found existing session, attempting to resume",
+				"session_id", sessionInfo.SessionID,
+				"thread_ts", threadTS,
+				"process_exists", sessionInfo.ProcessExists)
+		}
+
+		// If process doesn't exist in memory, try to resume it
+		if !sessionInfo.ProcessExists {
+			process, err := b.claudeService.ResumeSession(sessionInfo.SessionID, userID)
+			if err != nil {
+				slog.Warn("Failed to resume Claude session, creating new one",
+					"session_id", sessionInfo.SessionID,
+					"thread_ts", threadTS,
+					"error", err)
+				// Fall through to create new session
+			} else {
+				// Successfully resumed
+				session := &SlackClaudeSession{
+					ThreadTS:     threadTS,
+					ChannelID:    channelID,
+					UserID:       userID,
+					SessionID:    sessionInfo.SessionID,
+					ProcessID:    process.GetCorrelationID(),
+					LastActivity: time.Now(),
+					Context:      sessionInfo.WorkingDir,
+					Active:       true,
+					Resumed:      true,
+					Process:      process,
+					SessionInfo:  sessionInfo,
+				}
+
+				// Store session
+				b.setSession(threadTS, session)
+
+				// Create context tracking for this resumed Claude session
+				if b.contextManager != nil {
+					b.contextManager.CreateContext(threadTS, channelID, userID, "claude", "Claude session (resumed)")
+				}
+
+				if b.config.Debug {
+					slog.Debug("Resumed Claude session successfully",
+						"thread_ts", threadTS,
+						"session_id", sessionInfo.SessionID,
+						"working_dir", sessionInfo.WorkingDir)
+				}
+
+				return session, nil
+			}
+		} else {
+			// Process exists in memory, just recreate the SlackClaudeSession
+			if b.config.Debug {
+				slog.Debug("Session process exists in memory, recreating session object",
+					"session_id", sessionInfo.SessionID,
+					"thread_ts", threadTS)
+			}
+
+			session := &SlackClaudeSession{
+				ThreadTS:     threadTS,
+				ChannelID:    channelID,
+				UserID:       userID,
+				SessionID:    sessionInfo.SessionID,
+				ProcessID:    "", // Will be updated when process is accessed
+				LastActivity: time.Now(),
+				Context:      sessionInfo.WorkingDir,
+				Active:       true,
+				Resumed:      false, // Not newly resumed, was already active
+				Process:      nil,   // Will be retrieved from service when needed
+				SessionInfo:  sessionInfo,
+			}
+
+			// Store session
+			b.setSession(threadTS, session)
+
+			return session, nil
+		}
+	}
+
+	// Create new session
+	process, newSessionInfo, err := b.claudeService.CreateSessionWithPersistence(threadTS, channelID, userID, b.config.WorkingDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Claude session: %w", err)
+	}
+
 	session := &SlackClaudeSession{
 		ThreadTS:     threadTS,
 		ChannelID:    channelID,
 		UserID:       userID,
-		SessionID:    sessionID,
-		ProcessID:    correlationID,
+		SessionID:    newSessionInfo.SessionID,
+		ProcessID:    process.GetCorrelationID(),
 		LastActivity: time.Now(),
 		Context:      b.config.WorkingDirectory,
 		Active:       true,
+		Resumed:      false,
+		Process:      process,
+		SessionInfo:  newSessionInfo,
 	}
 
 	// Store session
 	b.setSession(threadTS, session)
 
-	if b.config.Debug {
-		slog.Debug("Created Claude session",
-			"thread_ts", threadTS,
-			"session_id", sessionID,
-			"correlation_id", correlationID)
+	// Create context tracking for this new Claude session
+	if b.contextManager != nil {
+		b.contextManager.CreateContext(threadTS, channelID, userID, "claude", "Claude session")
 	}
+
+	if b.config.Debug {
+		slog.Debug("Created new Claude session",
+			"thread_ts", threadTS,
+			"session_id", newSessionInfo.SessionID,
+			"working_dir", newSessionInfo.WorkingDir)
+	}
+
+	// Communicate session ID to user
+	go func() {
+		// Small delay to ensure session creation message order
+		time.Sleep(500 * time.Millisecond)
+		sessionMsg := fmt.Sprintf("📋 **Session ID:** `%s`\n🔗 **Component URL:** %s/data/session/%s/", 
+			newSessionInfo.SessionID, 
+			b.getExternalURL(),
+			newSessionInfo.SessionID)
+		
+		_, err := b.postMessage(channelID, threadTS, sessionMsg)
+		if err != nil {
+			slog.Error("Failed to post session ID message", "error", err)
+		}
+	}()
 
 	return session, nil
 }
@@ -46,22 +167,21 @@ func (b *SlackBot) streamClaudeInteraction(session *SlackClaudeSession, prompt s
 	if b.config.Debug {
 		slog.Debug("Starting Claude interaction",
 			"session_id", session.SessionID,
-			"prompt_length", len(prompt))
+			"prompt_length", len(prompt),
+			"resumed", session.Resumed)
 	}
 
 	ctx := context.Background()
 
-	// Create Claude session with working directory
-	process, err := b.claudeService.CreateSessionWithOptions(session.Context)
-	if err != nil {
-		slog.Error("Failed to create Claude session", "error", err)
+	// Use existing process or create/resume as needed
+	process := session.Process
+	if process == nil {
+		// This should not happen for new sessions, but handle it gracefully
+		slog.Error("No Claude process available for session", "session_id", session.SessionID)
 		b.updateMessage(session.ChannelID, session.ThreadTS,
-			"❌ Failed to create Claude session. Please try again later.")
+			"❌ Failed to access Claude session. Please try again.")
 		return
 	}
-
-	// Store process reference (ProcessID is just for tracking, not used to find process)
-	session.Process = process
 
 	// Send prompt to Claude
 	if err := b.claudeService.SendMessage(process, prompt); err != nil {
@@ -74,7 +194,8 @@ func (b *SlackBot) streamClaudeInteraction(session *SlackClaudeSession, prompt s
 	if b.config.Debug {
 		slog.Debug("Sent prompt to Claude, starting response stream",
 			"session_id", session.SessionID,
-			"prompt_length", len(prompt))
+			"prompt_length", len(prompt),
+			"resumed", session.Resumed)
 	}
 
 	// Stream responses back to Slack
@@ -479,19 +600,55 @@ func (b *SlackBot) sendToClaudeSession(session *SlackClaudeSession, message stri
 			slog.Error("Failed to post processing acknowledgment", "error", err)
 		}
 
-		// Use the stored Claude process for this session
+		// Get or resume Claude process for this session
 		process := session.Process
 		if process == nil {
-			slog.Error("Claude process not found for session", "process_id", session.ProcessID)
-			_, err := b.postMessage(session.ChannelID, session.ThreadTS,
-				"❌ Claude session expired. Use `/flow <your message>` to start a new conversation.")
-			if err != nil {
-				slog.Error("Failed to post error message", "error", err)
+			// Try to resume the session
+			if b.config.Debug {
+				slog.Debug("Claude process not in memory, attempting to resume",
+					"session_id", session.SessionID,
+					"thread_ts", session.ThreadTS)
 			}
-			return
+
+			resumedProcess, err := b.claudeService.ResumeSession(session.SessionID, session.UserID)
+			if err != nil {
+				slog.Error("Failed to resume Claude session", 
+					"session_id", session.SessionID,
+					"thread_ts", session.ThreadTS,
+					"error", err)
+				_, err := b.postMessage(session.ChannelID, session.ThreadTS,
+					"❌ Claude session expired and could not be resumed. Use `/flow <your message>` to start a new conversation.")
+				if err != nil {
+					slog.Error("Failed to post session resume error message", "error", err)
+				}
+				return
+			}
+
+			// Update session with resumed process
+			session.Process = resumedProcess
+			session.Resumed = true
+			session.LastActivity = time.Now()
+			process = resumedProcess
+
+			if b.config.Debug {
+				slog.Debug("Successfully resumed Claude session",
+					"session_id", session.SessionID,
+					"thread_ts", session.ThreadTS)
+			}
+
+			// Post a notification about resumption
+			_, err = b.postMessage(session.ChannelID, session.ThreadTS, "🔄 _Resumed previous Claude session with full context..._")
+			if err != nil {
+				slog.Error("Failed to post resumption notification", "error", err)
+			}
 		}
 
-		// Send follow-up message to existing Claude process
+		// Update session activity in database
+		if err := b.claudeService.UpdateSessionActivity(session.SessionID); err != nil {
+			slog.Error("Failed to update session activity", "error", err)
+		}
+
+		// Send follow-up message to Claude process
 		if err := b.claudeService.SendMessage(process, message); err != nil {
 			slog.Error("Failed to send follow-up to Claude", "error", err)
 			_, err := b.postMessage(session.ChannelID, session.ThreadTS,
@@ -505,7 +662,8 @@ func (b *SlackBot) sendToClaudeSession(session *SlackClaudeSession, message stri
 		if b.config.Debug {
 			slog.Debug("Sent follow-up message to Claude successfully",
 				"session_id", session.SessionID,
-				"message_length", len(message))
+				"message_length", len(message),
+				"resumed", session.Resumed)
 		}
 
 		// Handle the response stream

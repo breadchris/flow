@@ -4,6 +4,7 @@ import (
 	"github.com/breadchris/flow/config"
 	"github.com/breadchris/flow/db"
 	"github.com/breadchris/flow/session"
+	"github.com/sashabaranov/go-openai"
 )
 
 // DepsFactory provides methods to create dependencies
@@ -31,10 +32,17 @@ func (f *DepsFactory) CreateDeps() Deps {
 		sessionManager = nil
 	}
 
+	// Create OpenAI client
+	var aiClient *openai.Client
+	if f.config.OpenAIKey != "" {
+		aiClient = openai.NewClient(f.config.OpenAIKey)
+	}
+
 	return Deps{
 		Dir:     f.config.ShareDir,
 		DB:      database,
 		Config:  f.config,
 		Session: sessionManager,
+		AI:      aiClient,
 	}
 }

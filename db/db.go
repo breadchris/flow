@@ -322,6 +322,12 @@ func LoadDB(dsn string) *gorm.DB {
 		&models.ClaudeDocTag{},
 		&models.ClaudeDocStar{},
 		&models.ClaudeSession{},
+		// New Slack persistence models
+		&models.SlackSession{},
+		&models.ThreadContext{},
+		&models.SlackUserActivity{},
+		&models.SlackIdeationSession{},
+		&models.SlackFileUpload{},
 	); err != nil {
 		log.Fatalf("Failed to migrate db: %v", err)
 	}
@@ -351,6 +357,12 @@ func NewClaudeDB(dsn string) *gorm.DB {
 
 	if err := db.AutoMigrate(
 		&models.ClaudeSession{},
+		// New Slack persistence models
+		&models.SlackSession{},
+		&models.ThreadContext{},
+		&models.SlackUserActivity{},
+		&models.SlackIdeationSession{},
+		&models.SlackFileUpload{},
 	); err != nil {
 		log.Fatalf("Failed to migrate db: %v", err)
 	}

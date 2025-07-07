@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
 	"time"
 
@@ -22,15 +21,23 @@ import (
 type SlackBot struct {
 	client           *slack.Client
 	socketMode       *socketmode.Client
-	claudeService    *claude.Service
+	claudeService    *claude.ClaudeService // Updated to use database-integrated service
 	workletManager   *worklet.Manager
-	sessions         map[string]*SlackClaudeSession // thread_ts -> session
+	chatgptService   *ChatGPTService
+	ideationManager  *IdeationManager
+	contextManager   *ContextManager
+	sessionDB        *SessionDBService     // Database service for sessions
+	contextDB        *ContextDBService     // Database service for contexts
+	fileManager      *FileManager          // File management service for uploads
+	rateLimiter      *MessageRateLimiter   // Rate limiter for messages
+	sessions         map[string]*SlackClaudeSession // thread_ts -> session (temporary for process references)
 	mu               sync.RWMutex
 	config           *config.SlackBotConfig
+	appConfig        *config.AppConfig     // Application config for external URL access
 	ctx              context.Context
 	cancel           context.CancelFunc
-	whitelistRegexes []*regexp.Regexp // Compiled regex patterns for channel whitelist
-	wg               sync.WaitGroup   // Wait group for tracking goroutines
+	channelWhitelist *ChannelWhitelist     // Channel access control
+	wg               sync.WaitGroup        // Wait group for tracking goroutines
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
@@ -43,7 +50,9 @@ type SlackClaudeSession struct {
 	LastActivity time.Time       `json:"last_activity"`
 	Context      string          `json:"context"` // Working directory context
 	Active       bool            `json:"active"`  // Whether the session is currently active
+	Resumed      bool            `json:"resumed"` // Whether this session was resumed
 	Process      *claude.Process `json:"-"`       // Active Claude process (not serialized)
+	SessionInfo  *claude.SessionInfo `json:"-"`   // Database session info (not serialized)
 }
 
 // New creates a new SlackBot instance
@@ -65,33 +74,62 @@ func New(d deps.Deps) (*SlackBot, error) {
 		socketmode.OptionDebug(slackConfig.Debug),
 	)
 
-	// Create Claude service with appropriate configuration
-	claudeConfig := claude.Config{
-		Debug:    slackConfig.Debug,
-		DebugDir: "/tmp/slackbot-claude",
-		Tools:    []string{"Read", "Write", "Bash"},
-	}
-	claudeService := claude.NewService(claudeConfig)
+	// Create database-integrated Claude service
+	claudeService := claude.NewClaudeService(d)
 
 	// Create worklet manager
 	workletManager := worklet.NewManager(&d)
 
+	// Create ChatGPT service
+	chatgptService := NewChatGPTService(d.AI, slackConfig.Debug)
+
+	// Create ideation manager
+	ideationManager := NewIdeationManager(slackConfig.Debug)
+
+	// Create context manager with default configuration
+	contextConfig := &ContextConfig{
+		Enabled:             true,
+		InactivityThreshold: 30 * time.Minute,
+		ContextUpdateDelay:  5 * time.Second,
+		AutoPinContext:      true,
+		ContextMaxAge:       24 * time.Hour,
+		MaxSummaryLength:    500,
+		MaxNextSteps:        4,
+	}
+	// Create database services
+	sessionDB := NewSessionDBService(d.DB, slackConfig.Debug)
+	contextDB := NewContextDBService(d.DB, slackConfig.Debug)
+	fileManager := NewFileManager(d.DB, slackConfig.Debug, 7*24*time.Hour) // Keep files for 7 days
+	rateLimiter := NewMessageRateLimiter(10, 1*time.Minute) // 10 messages per minute per user
+
+	contextManager := NewContextManager(chatgptService, contextConfig, contextDB, slackConfig.Debug)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	bot := &SlackBot{
-		client:         client,
-		socketMode:     socketClient,
-		claudeService:  claudeService,
-		workletManager: workletManager,
-		sessions:       make(map[string]*SlackClaudeSession),
-		config:         slackConfig,
-		ctx:            ctx,
-		cancel:         cancel,
+	// Create channel whitelist
+	channelWhitelist, err := NewChannelWhitelist(slackConfig.ChannelWhitelist, slackConfig.Debug)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create channel whitelist: %w", err)
 	}
 
-	// Compile channel whitelist regex patterns
-	if err := bot.compileWhitelistPatterns(); err != nil {
-		return nil, fmt.Errorf("failed to compile channel whitelist patterns: %w", err)
+	bot := &SlackBot{
+		client:           client,
+		socketMode:       socketClient,
+		claudeService:    claudeService,
+		workletManager:   workletManager,
+		chatgptService:   chatgptService,
+		ideationManager:  ideationManager,
+		contextManager:   contextManager,
+		sessionDB:        sessionDB,
+		contextDB:        contextDB,
+		fileManager:      fileManager,
+		rateLimiter:      rateLimiter,
+		sessions:         make(map[string]*SlackClaudeSession),
+		config:           slackConfig,
+		appConfig:        &d.Config,
+		ctx:              ctx,
+		cancel:           cancel,
+		channelWhitelist: channelWhitelist,
 	}
 
 	return bot, nil
@@ -107,6 +145,33 @@ func (b *SlackBot) Start(ctx context.Context) error {
 		defer b.wg.Done()
 		b.cleanupSessions()
 	}()
+
+	// Start context cleanup goroutine
+	if b.contextManager != nil {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.cleanupContexts()
+		}()
+	}
+
+	// Start file cleanup goroutine
+	if b.fileManager != nil {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.cleanupFiles()
+		}()
+	}
+
+	// Start rate limiter cleanup goroutine
+	if b.rateLimiter != nil {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.cleanupRateLimiter()
+		}()
+	}
 
 	// Handle socket mode events
 	b.wg.Add(1)
@@ -205,22 +270,51 @@ func (b *SlackBot) Stop() error {
 	return nil
 }
 
-// getSession retrieves a session by thread timestamp
+// getSession retrieves a session by thread timestamp from database
 func (b *SlackBot) getSession(threadTS string) (*SlackClaudeSession, bool) {
+	// First check in-memory cache for active processes
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	session, exists := b.sessions[threadTS]
-	return session, exists
+	if session, exists := b.sessions[threadTS]; exists && session.Process != nil {
+		b.mu.RUnlock()
+		return session, true
+	}
+	b.mu.RUnlock()
+
+	// Check database for persistent session data
+	session, err := b.sessionDB.GetSession(threadTS)
+	if err != nil {
+		if b.config.Debug {
+			slog.Error("Failed to get session from database", "error", err, "thread_ts", threadTS)
+		}
+		return nil, false
+	}
+	if session == nil {
+		return nil, false
+	}
+
+	// Store in memory cache for future access
+	b.mu.Lock()
+	b.sessions[threadTS] = session
+	b.mu.Unlock()
+
+	return session, true
 }
 
-// setSession stores a session by thread timestamp
+// setSession stores a session by thread timestamp in both database and memory
 func (b *SlackBot) setSession(threadTS string, session *SlackClaudeSession) {
+	// Store in database for persistence
+	if err := b.sessionDB.SetSession(session); err != nil {
+		slog.Error("Failed to store session in database", "error", err, "thread_ts", threadTS)
+		// Continue with in-memory storage even if database fails
+	}
+
+	// Store in memory for active process reference
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Check max sessions limit
+	// Check max sessions limit for in-memory cache
 	if len(b.sessions) >= b.config.MaxSessions {
-		// Remove oldest inactive session
+		// Remove oldest inactive session from memory (database keeps them)
 		var oldestTS string
 		var oldestTime time.Time
 		for ts, s := range b.sessions {
@@ -231,15 +325,21 @@ func (b *SlackBot) setSession(threadTS string, session *SlackClaudeSession) {
 		}
 		if oldestTS != "" {
 			delete(b.sessions, oldestTS)
-			slog.Info("Removed oldest session to make room for new one", "thread_ts", oldestTS)
+			slog.Info("Removed oldest session from memory cache", "thread_ts", oldestTS)
 		}
 	}
 
 	b.sessions[threadTS] = session
 }
 
-// removeSession removes a session by thread timestamp
+// removeSession removes a session by thread timestamp from both database and memory
 func (b *SlackBot) removeSession(threadTS string) {
+	// Mark as inactive in database
+	if err := b.sessionDB.RemoveSession(threadTS); err != nil {
+		slog.Error("Failed to remove session from database", "error", err, "thread_ts", threadTS)
+	}
+
+	// Remove from memory cache
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.sessions, threadTS)
@@ -253,12 +353,18 @@ func (b *SlackBot) cleanupSessions() {
 	for {
 		select {
 		case <-ticker.C:
+			// Cleanup database sessions
+			if err := b.sessionDB.CleanupInactiveSessions(b.config.SessionTimeout); err != nil {
+				slog.Error("Failed to cleanup database sessions", "error", err)
+			}
+
+			// Cleanup memory cache sessions
 			b.mu.Lock()
 			for threadTS, session := range b.sessions {
 				if time.Since(session.LastActivity) > b.config.SessionTimeout {
 					delete(b.sessions, threadTS)
 					session.Active = false
-					slog.Info("Cleaned up inactive session",
+					slog.Info("Cleaned up inactive session from memory",
 						"thread_ts", threadTS,
 						"session_id", session.SessionID,
 						"idle_time", time.Since(session.LastActivity))
@@ -272,8 +378,95 @@ func (b *SlackBot) cleanupSessions() {
 	}
 }
 
+// cleanupContexts periodically removes old context summaries
+func (b *SlackBot) cleanupContexts() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Cleanup database contexts
+			if err := b.contextDB.CleanupOldContexts(24 * time.Hour); err != nil {
+				slog.Error("Failed to cleanup database contexts", "error", err)
+			}
+
+			// Cleanup in-memory contexts if contextManager exists
+			if b.contextManager != nil {
+				removedCount := b.contextManager.CleanupOldContexts()
+				if removedCount > 0 && b.config.Debug {
+					slog.Debug("Cleaned up old contexts from memory", "removed_count", removedCount)
+				}
+			}
+
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// cleanupFiles periodically removes old uploaded files
+func (b *SlackBot) cleanupFiles() {
+	ticker := time.NewTicker(30 * time.Minute) // Run every 30 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Cleanup old files
+			if err := b.fileManager.CleanupOldFiles(); err != nil {
+				slog.Error("Failed to cleanup old files", "error", err)
+			}
+
+			// Cleanup empty directories
+			if err := b.fileManager.CleanupEmptyDirectories(); err != nil {
+				slog.Error("Failed to cleanup empty directories", "error", err)
+			}
+
+			// Log file upload statistics if debug mode is enabled
+			if b.config.Debug {
+				if stats, err := b.fileManager.GetFileUploadStats(); err == nil {
+					slog.Debug("File upload statistics", "stats", stats)
+				}
+			}
+
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// cleanupRateLimiter periodically cleans up expired rate limit entries
+func (b *SlackBot) cleanupRateLimiter() {
+	ticker := time.NewTicker(5 * time.Minute) // Run every 5 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Cleanup expired rate limit entries
+			b.rateLimiter.CleanupExpiredEntries()
+
+			if b.config.Debug {
+				slog.Debug("Cleaned up expired rate limit entries")
+			}
+
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
 // updateSessionActivity updates the last activity time for a session
 func (b *SlackBot) updateSessionActivity(threadTS string) {
+	// Update in database
+	if err := b.sessionDB.UpdateSessionActivity(threadTS); err != nil {
+		if b.config.Debug {
+			slog.Error("Failed to update session activity in database", "error", err, "thread_ts", threadTS)
+		}
+	}
+
+	// Update in memory cache if present
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if session, exists := b.sessions[threadTS]; exists {
@@ -288,56 +481,15 @@ func (b *SlackBot) createSessionID(userID string) (string, string) {
 	return sessionID, correlationID
 }
 
-// compileWhitelistPatterns compiles regex patterns for channel whitelist
-func (b *SlackBot) compileWhitelistPatterns() error {
-	if len(b.config.ChannelWhitelist) == 0 {
-		// No whitelist configured - allow all channels
-		return nil
-	}
-
-	b.whitelistRegexes = make([]*regexp.Regexp, 0, len(b.config.ChannelWhitelist))
-
-	for _, pattern := range b.config.ChannelWhitelist {
-		regex, err := regexp.Compile(pattern)
-		if err != nil {
-			return fmt.Errorf("invalid regex pattern '%s': %w", pattern, err)
-		}
-		b.whitelistRegexes = append(b.whitelistRegexes, regex)
-	}
-
-	if b.config.Debug {
-		slog.Debug("Compiled channel whitelist patterns",
-			"patterns", b.config.ChannelWhitelist,
-			"count", len(b.whitelistRegexes))
-	}
-
-	return nil
-}
-
 // isChannelAllowed checks if a channel ID matches the whitelist patterns
 func (b *SlackBot) isChannelAllowed(channelID string) bool {
-	// If no whitelist is configured, allow all channels
-	if len(b.whitelistRegexes) == 0 {
-		return true
-	}
+	return b.channelWhitelist.IsAllowed(channelID)
+}
 
-	// Check if channel matches any whitelist pattern
-	for _, regex := range b.whitelistRegexes {
-		if regex.MatchString(channelID) {
-			if b.config.Debug {
-				slog.Debug("Channel allowed by whitelist",
-					"channel_id", channelID,
-					"pattern", regex.String())
-			}
-			return true
-		}
+// getExternalURL returns the configured external URL for component access
+func (b *SlackBot) getExternalURL() string {
+	if b.appConfig != nil && b.appConfig.ExternalURL != "" {
+		return b.appConfig.ExternalURL
 	}
-
-	if b.config.Debug {
-		slog.Debug("Channel rejected by whitelist",
-			"channel_id", channelID,
-			"whitelist_patterns", b.config.ChannelWhitelist)
-	}
-
-	return false
+	return "http://localhost:8080" // Default fallback
 }

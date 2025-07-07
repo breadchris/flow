@@ -11,11 +11,15 @@ import (
 func setConfigDefaults(config *AppConfig) {
 	// SlackBot defaults
 	config.SlackBot = SlackBotConfig{
-		Enabled:          true,
-		SessionTimeout:   30 * time.Minute,
-		MaxSessions:      10,
-		WorkingDirectory: "/tmp/slackbot",
-		Debug:            true,
+		Enabled:             false,
+		SessionTimeout:      30 * time.Minute,
+		MaxSessions:         10,
+		WorkingDirectory:    "/tmp/slackbot",
+		Debug:               true,
+		IdeationEnabled:     true,
+		IdeationTimeout:     2 * time.Hour,
+		MaxIdeationSessions: 20,
+		AutoExpandThreshold: 2,
 	}
 
 	// Claude defaults
@@ -40,6 +44,62 @@ func setConfigDefaults(config *AppConfig) {
 
 // applyEnvOverrides applies environment variable overrides to the configuration
 func applyEnvOverrides(config *AppConfig) {
+	// OpenAI environment variables
+	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
+		config.OpenAIKey = openaiKey
+	}
+
+	// SlackBot environment variables
+	if enabled := os.Getenv("SLACKBOT_ENABLED"); enabled != "" {
+		config.SlackBot.Enabled = enabled == "true" || enabled == "1"
+	}
+	if botToken := os.Getenv("SLACK_BOT_TOKEN"); botToken != "" {
+		config.SlackBot.BotToken = botToken
+	}
+	if slackToken := os.Getenv("SLACK_TOKEN"); slackToken != "" {
+		config.SlackBot.SlackToken = slackToken
+	}
+	if signingSecret := os.Getenv("SLACK_SIGNING_SECRET"); signingSecret != "" {
+		config.SlackBot.SlackSigningSecret = signingSecret
+	}
+	if debug := os.Getenv("SLACKBOT_DEBUG"); debug != "" {
+		config.SlackBot.Debug = debug == "true" || debug == "1"
+	}
+	if ideationEnabled := os.Getenv("SLACKBOT_IDEATION_ENABLED"); ideationEnabled != "" {
+		config.SlackBot.IdeationEnabled = ideationEnabled == "true" || ideationEnabled == "1"
+	}
+	if sessionTimeoutStr := os.Getenv("SLACKBOT_SESSION_TIMEOUT"); sessionTimeoutStr != "" {
+		if sessionTimeout, err := time.ParseDuration(sessionTimeoutStr); err == nil {
+			config.SlackBot.SessionTimeout = sessionTimeout
+		}
+	}
+	if ideationTimeoutStr := os.Getenv("SLACKBOT_IDEATION_TIMEOUT"); ideationTimeoutStr != "" {
+		if ideationTimeout, err := time.ParseDuration(ideationTimeoutStr); err == nil {
+			config.SlackBot.IdeationTimeout = ideationTimeout
+		}
+	}
+	if maxSessionsStr := os.Getenv("SLACKBOT_MAX_SESSIONS"); maxSessionsStr != "" {
+		if maxSessions, err := strconv.Atoi(maxSessionsStr); err == nil {
+			config.SlackBot.MaxSessions = maxSessions
+		}
+	}
+	if maxIdeationSessionsStr := os.Getenv("SLACKBOT_MAX_IDEATION_SESSIONS"); maxIdeationSessionsStr != "" {
+		if maxIdeationSessions, err := strconv.Atoi(maxIdeationSessionsStr); err == nil {
+			config.SlackBot.MaxIdeationSessions = maxIdeationSessions
+		}
+	}
+	if autoExpandThresholdStr := os.Getenv("SLACKBOT_AUTO_EXPAND_THRESHOLD"); autoExpandThresholdStr != "" {
+		if autoExpandThreshold, err := strconv.Atoi(autoExpandThresholdStr); err == nil {
+			config.SlackBot.AutoExpandThreshold = autoExpandThreshold
+		}
+	}
+	if workingDir := os.Getenv("SLACKBOT_WORKING_DIRECTORY"); workingDir != "" {
+		config.SlackBot.WorkingDirectory = workingDir
+	}
+	if channelWhitelist := os.Getenv("SLACKBOT_CHANNEL_WHITELIST"); channelWhitelist != "" {
+		config.SlackBot.ChannelWhitelist = parseCommaSeparated(channelWhitelist)
+	}
+
 	// Claude environment variables
 	if debugStr := os.Getenv("CLAUDE_DEBUG"); debugStr != "" {
 		config.Claude.Debug = debugStr == "true" || debugStr == "1"

@@ -446,9 +446,157 @@ type ClaudeSession struct {
 	Metadata  *JSONField[map[string]interface{}] `json:"metadata,omitempty"`
 }
 
+// SlackSession represents a Claude session tied to a Slack thread (database version)
+type SlackSession struct {
+	Model
+	ThreadTS     string    `json:"thread_ts" gorm:"index;not null"`
+	ChannelID    string    `json:"channel_id" gorm:"index;not null"`
+	UserID       string    `json:"user_id" gorm:"index;not null"`
+	User         *User     `gorm:"foreignKey:UserID"`
+	SessionID    string    `json:"session_id" gorm:"index"`
+	ProcessID    string    `json:"process_id"`
+	LastActivity time.Time `json:"last_activity"`
+	Context      string    `json:"context"` // Working directory context
+	Active       bool      `json:"active" gorm:"default:true"`
+	Resumed      bool      `json:"resumed" gorm:"default:false"`
+}
+
+// ThreadContext represents a context summary for a Slack thread (database version)
+type ThreadContext struct {
+	Model
+	ThreadTS       string                            `json:"thread_ts" gorm:"index;not null"`
+	ChannelID      string                            `json:"channel_id" gorm:"index;not null"`
+	SessionType    string                            `json:"session_type"` // "ideation", "claude", "worklet"
+	OriginalPrompt string                            `json:"original_prompt"`
+	LastActivity   time.Time                         `json:"last_activity"`
+	Summary        string                            `json:"summary"`
+	NextSteps      JSONField[[]string]               `json:"next_steps" gorm:"type:json"`
+	KeyMetrics     JSONField[map[string]interface{}] `json:"key_metrics" gorm:"type:json"`
+	PinnedMessage  string                            `json:"pinned_message"` // Timestamp of pinned context message
+	UserID         string                            `json:"user_id" gorm:"index;not null"`
+	User           *User                             `gorm:"foreignKey:UserID"`
+	Active         bool                              `json:"active" gorm:"default:true"`
+}
+
+// SlackUserActivity tracks user activity patterns in threads (database version)
+type SlackUserActivity struct {
+	Model
+	UserID       string    `json:"user_id" gorm:"index;not null"`
+	User         *User     `gorm:"foreignKey:UserID"`
+	ThreadTS     string    `json:"thread_ts" gorm:"index;not null"`
+	LastSeen     time.Time `json:"last_seen"`
+	MessageCount int       `json:"message_count"`
+	SessionStart time.Time `json:"session_start"`
+}
+
+// SlackIdeationSession represents an ideation session tied to a Slack thread (database version)
+type SlackIdeationSession struct {
+	Model
+	SessionID     string                            `json:"session_id" gorm:"unique;not null;index"`
+	ThreadID      string                            `json:"thread_id" gorm:"index;not null"`
+	ChannelID     string                            `json:"channel_id" gorm:"index;not null"`
+	UserID        string                            `json:"user_id" gorm:"index;not null"`
+	User          *User                             `gorm:"foreignKey:UserID"`
+	OriginalIdea  string                            `json:"original_idea"`
+	Features      JSONField[[]Feature]              `json:"features" gorm:"type:json"`
+	Preferences   JSONField[map[string]int]         `json:"preferences" gorm:"type:json"` // emoji -> count
+	ChatHistory   JSONField[[]ChatMessage]          `json:"chat_history" gorm:"type:json"`
+	LastActivity  time.Time                         `json:"last_activity"`
+	Active        bool                              `json:"active" gorm:"default:true"`
+	MessageTS     JSONField[map[string]string]      `json:"message_ts" gorm:"type:json"` // feature_id -> message timestamp
+}
+
+// SlackFileUpload represents a file uploaded to a Slack thread
+type SlackFileUpload struct {
+	Model
+	ThreadTS     string    `json:"thread_ts" gorm:"index;not null"`
+	ChannelID    string    `json:"channel_id" gorm:"index;not null"`
+	UserID       string    `json:"user_id" gorm:"index;not null"`
+	User         *User     `gorm:"foreignKey:UserID"`
+	SlackFileID  string    `json:"slack_file_id" gorm:"index;not null"` // Slack's file ID
+	FileName     string    `json:"file_name" gorm:"not null"`
+	OriginalName string    `json:"original_name" gorm:"not null"`
+	MimeType     string    `json:"mime_type"`
+	FileSize     int64     `json:"file_size"`
+	LocalPath    string    `json:"local_path" gorm:"not null"` // Path where file is stored locally
+	UploadedAt   time.Time `json:"uploaded_at"`
+	Downloaded   bool      `json:"downloaded" gorm:"default:false"`
+	DownloadedAt *time.Time `json:"downloaded_at"`
+	SessionID    string    `json:"session_id" gorm:"index"` // Associated Claude session ID if any
+}
+
+// Feature represents a feature in ideation sessions
+type Feature struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+	Priority    string `json:"priority"`
+	Complexity  string `json:"complexity"`
+}
+
+// ChatMessage represents a message in the ideation chat history
+type ChatMessage struct {
+	Role      string    `json:"role"`      // "user" or "assistant"
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`      // "initial", "expansion", "reaction", etc.
+}
+
 type PinnedFile struct {
 	Model
 	UserID   string `json:"user_id" gorm:"index;not null;uniqueIndex:idx_user_file"`
 	FilePath string `json:"file_path" gorm:"not null;uniqueIndex:idx_user_file"`
 	User     *User  `gorm:"foreignKey:UserID"`
+}
+
+// WorkletKVStore represents key-value data for worklet prototypes
+type WorkletKVStore struct {
+	Model
+	WorkletID string                             `json:"worklet_id" gorm:"index;not null"`
+	Namespace string                             `json:"namespace" gorm:"not null;default:'default'"`
+	Key       string                             `json:"key" gorm:"not null"`
+	Value     *JSONField[map[string]interface{}] `json:"value" gorm:"type:jsonb;not null"`
+	// Composite unique constraint: worklet_id + namespace + key
+	// This ensures no key collisions within the same worklet and namespace
+}
+
+// WorkletKVEntry represents a single key-value entry for API responses
+type WorkletKVEntry struct {
+	Key       string                 `json:"key"`
+	Value     map[string]interface{} `json:"value"`
+	Namespace string                 `json:"namespace"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
+}
+
+// ToEntry converts a WorkletKVStore model to a WorkletKVEntry response
+func (kv *WorkletKVStore) ToEntry() WorkletKVEntry {
+	var value map[string]interface{}
+	if kv.Value != nil {
+		value = kv.Value.Data
+	}
+	
+	return WorkletKVEntry{
+		Key:       kv.Key,
+		Value:     value,
+		Namespace: kv.Namespace,
+		CreatedAt: kv.CreatedAt,
+		UpdatedAt: kv.UpdatedAt,
+	}
+}
+
+// NewWorkletKVStore creates a new WorkletKVStore entry
+func NewWorkletKVStore(workletID, namespace, key string, value map[string]interface{}) *WorkletKVStore {
+	if namespace == "" {
+		namespace = "default"
+	}
+	
+	return &WorkletKVStore{
+		Model:     Model{ID: uuid.New().String()},
+		WorkletID: workletID,
+		Namespace: namespace,
+		Key:       key,
+		Value:     MakeJSONField(value),
+	}
 }

@@ -41,18 +41,24 @@ type ProxyConfig struct {
 }
 
 type SlackBotConfig struct {
-	Enabled            bool          `json:"enabled"`
-	SlackAppID         string        `json:"app_id"`
-	SlackClientID      string        `json:"client_id"`
-	SlackClientSecret  string        `json:"client_secret"`
-	SlackSigningSecret string        `json:"signing_secret"`
-	SlackToken         string        `json:"token"`
-	BotToken           string        `json:"bot_token"`
-	SessionTimeout     time.Duration `json:"session_timeout"`
-	MaxSessions        int           `json:"max_sessions"`
-	WorkingDirectory   string        `json:"working_directory"`
-	Debug              bool          `json:"debug"`
-	ChannelWhitelist   []string      `json:"channel_whitelist"`
+	Enabled              bool          `json:"enabled"`
+	SlackAppID           string        `json:"app_id"`
+	SlackClientID        string        `json:"client_id"`
+	SlackClientSecret    string        `json:"client_secret"`
+	SlackSigningSecret   string        `json:"signing_secret"`
+	SlackToken           string        `json:"token"`
+	BotToken             string        `json:"bot_token"`
+	SessionTimeout       time.Duration `json:"session_timeout"`
+	MaxSessions          int           `json:"max_sessions"`
+	WorkingDirectory     string        `json:"working_directory"`
+	Debug                bool          `json:"debug"`
+	ChannelWhitelist     []string      `json:"channel_whitelist"`
+	
+	// Ideation settings
+	IdeationEnabled      bool          `json:"ideation_enabled"`
+	IdeationTimeout      time.Duration `json:"ideation_timeout"`
+	MaxIdeationSessions  int           `json:"max_ideation_sessions"`
+	AutoExpandThreshold  int           `json:"auto_expand_threshold"`
 }
 
 type ClaudeConfig struct {

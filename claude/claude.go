@@ -14,7 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breadchris/flow/deps"
+	"github.com/breadchris/flow/models"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type Config struct {
@@ -27,6 +30,26 @@ type Service struct {
 	config   Config
 	sessions map[string]*Process
 	mu       sync.RWMutex
+}
+
+// ClaudeService provides database-integrated Claude session management
+type ClaudeService struct {
+	service *Service // Embedded basic service
+	db      *gorm.DB
+	config  Config
+	debug   bool
+}
+
+// SessionInfo represents session metadata stored in database
+type SessionInfo struct {
+	SessionID     string
+	ThreadTS      string
+	UserID        string
+	ChannelID     string
+	WorkingDir    string
+	LastActivity  time.Time
+	Active        bool
+	ProcessExists bool
 }
 
 type Process struct {
@@ -51,6 +74,11 @@ type Process struct {
 	outputChan    chan Message // Channel for receiving messages from Claude
 	initComplete  chan bool    // Signal when initialization is complete
 	errorChan     chan Message // Channel for forwarding stderr errors
+}
+
+// GetCorrelationID returns the correlation ID for this process
+func (p *Process) GetCorrelationID() string {
+	return p.correlationID
 }
 
 // Message represents a message from Claude CLI
@@ -298,12 +326,18 @@ func (s *Service) CreateSession() (*Process, error) {
 }
 
 func (s *Service) CreateSessionWithOptions(workingDir string) (*Process, error) {
+	return s.CreateSessionWithMultipleDirs([]string{workingDir})
+}
+
+// CreateSessionWithMultipleDirs creates a new Claude session with multiple directories
+func (s *Service) CreateSessionWithMultipleDirs(dirs []string) (*Process, error) {
 	startTime := time.Now()
 	correlationID := uuid.New().String()
 
 	slog.Info("Creating new Claude CLI session",
 		"correlation_id", correlationID,
 		"debug_mode", s.config.Debug,
+		"directories", dirs,
 		"action", "claude_process_start",
 	)
 
@@ -347,8 +381,11 @@ func (s *Service) CreateSessionWithOptions(workingDir string) (*Process, error) 
 		"--allowedTools", strings.Join(s.config.Tools, ","),
 	}
 	
-	if workingDir != "" {
-		args = append(args, "--add-dir", workingDir)
+	// Add all directories that are not empty
+	for _, dir := range dirs {
+		if dir != "" {
+			args = append(args, "--add-dir", dir)
+		}
 	}
 
 	slog.Debug("Claude CLI command prepared",
@@ -810,5 +847,492 @@ func (s *Service) StopSession(sessionID string) {
 			"session_id", sessionID,
 			"action", "session_not_found_for_stop",
 		)
+	}
+}
+
+// NewClaudeService creates a new database-integrated Claude service
+func NewClaudeService(d deps.Deps) *ClaudeService {
+	config := Config{
+		Debug:    d.Config.ClaudeDebug,
+		DebugDir: "/tmp/claude-sessions",
+		Tools:    []string{"Read", "Write", "Bash"},
+	}
+
+	service := NewService(config)
+
+	return &ClaudeService{
+		service: service,
+		db:      d.DB,
+		config:  config,
+		debug:   config.Debug,
+	}
+}
+
+// GetDB returns the database instance for external access
+func (cs *ClaudeService) GetDB() *gorm.DB {
+	return cs.db
+}
+
+// CreateSessionWithPersistence creates a new Claude session and persists it to database
+func (cs *ClaudeService) CreateSessionWithPersistence(threadTS, channelID, userID, workingDir string) (*Process, *SessionInfo, error) {
+	// Create session ID first
+	sessionID := uuid.New().String()
+	
+	// Create session-specific directory structure
+	sessionDir := filepath.Join("./data", "session", sessionID)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return nil, nil, fmt.Errorf("failed to create session directory: %w", err)
+	}
+	
+	// Copy CLAUDE.md from ./flow to session directory
+	flowClaudemd := filepath.Join("./flow", "CLAUDE.md")
+	sessionClaudemd := filepath.Join(sessionDir, "CLAUDE.md")
+	if err := cs.copyFile(flowClaudemd, sessionClaudemd); err != nil {
+		slog.Warn("Failed to copy CLAUDE.md to session directory",
+			"session_id", sessionID,
+			"error", err)
+		// Continue without CLAUDE.md - not critical
+	}
+	
+	// Prepare directories - use session directory as primary, include upload directory for this thread
+	uploadDir := filepath.Join("./data", "slack-uploads", threadTS)
+	dirs := []string{sessionDir, uploadDir}
+	
+	// Create upload directory if it doesn't exist
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		slog.Warn("Failed to create upload directory, Claude won't have access to uploaded files",
+			"upload_dir", uploadDir,
+			"error", err,
+			"thread_ts", threadTS)
+		// Continue without upload directory
+		dirs = []string{workingDir}
+	}
+
+	// Create the Claude process using the underlying service with multiple directories
+	process, err := cs.service.CreateSessionWithMultipleDirs(dirs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create Claude process: %w", err)
+	}
+
+	// Create session info
+	sessionInfo := &SessionInfo{
+		SessionID:     sessionID,
+		ThreadTS:      threadTS,
+		UserID:        userID,
+		ChannelID:     channelID,
+		WorkingDir:    sessionDir,
+		LastActivity:  time.Now(),
+		Active:        true,
+		ProcessExists: true,
+	}
+
+	// Persist session to database
+	dbSession := &models.ClaudeSession{
+		SessionID: sessionID,
+		UserID:    userID,
+		Title:     fmt.Sprintf("Slack Thread %s", threadTS),
+		Messages:  models.JSONField[interface{}]{Data: []interface{}{}},
+		Metadata: models.MakeJSONField(map[string]interface{}{
+			"thread_ts":      threadTS,
+			"channel_id":     channelID,
+			"working_dir":    sessionDir,
+			"session_dir":    sessionDir,
+			"upload_dir":     uploadDir,
+			"created_via":    "slack_bot",
+			"last_activity":  time.Now().Format(time.RFC3339),
+			"active":         true,
+		}),
+	}
+
+	if err := cs.db.Create(dbSession).Error; err != nil {
+		// If database persistence fails, we still return the process but log the error
+		slog.Error("Failed to persist Claude session to database",
+			"session_id", process.sessionID,
+			"thread_ts", threadTS,
+			"error", err)
+	} else {
+		if cs.debug {
+			slog.Debug("Claude session persisted to database",
+				"session_id", process.sessionID,
+				"thread_ts", threadTS,
+				"user_id", userID)
+		}
+	}
+
+	return process, sessionInfo, nil
+}
+
+// ResumeSession attempts to resume an existing Claude session using --resume
+func (cs *ClaudeService) ResumeSession(sessionID, userID string) (*Process, error) {
+	if cs.debug {
+		slog.Debug("Attempting to resume Claude session",
+			"session_id", sessionID,
+			"user_id", userID)
+	}
+
+	// First check if session exists and belongs to user
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&dbSession).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("session not found for user")
+		}
+		return nil, fmt.Errorf("failed to query session: %w", err)
+	}
+
+	// Extract session directory and upload directory from metadata
+	sessionDir := ""
+	uploadDir := ""
+	if dbSession.Metadata != nil {
+		metadata := dbSession.Metadata.Data
+		// Try session_dir first, fallback to working_dir for old sessions
+		if sd, exists := metadata["session_dir"]; exists {
+			if sdStr, ok := sd.(string); ok {
+				sessionDir = sdStr
+			}
+		} else if wd, exists := metadata["working_dir"]; exists {
+			if wdStr, ok := wd.(string); ok {
+				sessionDir = wdStr
+			}
+		}
+		
+		// Check for upload_dir in metadata, or fall back to upload_directory
+		if ud, exists := metadata["upload_dir"]; exists {
+			if udStr, ok := ud.(string); ok {
+				uploadDir = udStr
+			}
+		} else if ud, exists := metadata["upload_directory"]; exists {
+			if udStr, ok := ud.(string); ok {
+				uploadDir = udStr
+			}
+		}
+	}
+
+	// Create Claude process with --resume argument, including upload directory if available
+	dirs := []string{sessionDir}
+	if uploadDir != "" {
+		dirs = append(dirs, uploadDir)
+		if cs.debug {
+			slog.Debug("Including upload directory in resumed session",
+				"session_id", sessionID,
+				"upload_dir", uploadDir)
+		}
+	}
+	
+	process, err := cs.createResumedProcessWithDirs(sessionID, dirs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resume Claude process: %w", err)
+	}
+
+	// Update session metadata to mark as resumed
+	if dbSession.Metadata != nil {
+		metadata := dbSession.Metadata.Data
+		metadata["resumed_at"] = time.Now().Format(time.RFC3339)
+		metadata["last_activity"] = time.Now().Format(time.RFC3339)
+	}
+
+	if err := cs.db.Save(&dbSession).Error; err != nil {
+		slog.Error("Failed to update resumed session metadata", "error", err)
+	}
+
+	if cs.debug {
+		slog.Debug("Claude session resumed successfully",
+			"session_id", sessionID,
+			"user_id", userID,
+			"session_dir", sessionDir)
+	}
+
+	return process, nil
+}
+
+// createResumedProcess creates a Claude process with --resume argument (single directory)
+func (cs *ClaudeService) createResumedProcess(sessionID, workingDir string) (*Process, error) {
+	return cs.createResumedProcessWithDirs(sessionID, []string{workingDir})
+}
+
+// createResumedProcessWithDirs creates a Claude process with --resume argument (multiple directories)
+func (cs *ClaudeService) createResumedProcessWithDirs(sessionID string, dirs []string) (*Process, error) {
+	startTime := time.Now()
+	correlationID := uuid.New().String()
+
+	slog.Info("Resuming Claude CLI session",
+		"session_id", sessionID,
+		"correlation_id", correlationID,
+		"debug_mode", cs.config.Debug,
+		"directories", dirs,
+		"action", "claude_process_resume",
+	)
+
+	// Create debug directory if debug mode is enabled
+	debugDir, err := cs.service.createDebugDirectory(correlationID)
+	if err != nil {
+		slog.Error("Failed to create debug directory for resumed session",
+			"correlation_id", correlationID,
+			"session_id", sessionID,
+			"error", err)
+		return nil, fmt.Errorf("failed to create debug directory: %w", err)
+	}
+
+	// Open debug files if debug mode is enabled
+	stdinLogFile, stdoutLogFile, stderrLogFile, err := cs.service.openDebugFiles(debugDir)
+	if err != nil {
+		slog.Error("Failed to open debug files for resumed session",
+			"correlation_id", correlationID,
+			"session_id", sessionID,
+			"error", err)
+		return nil, fmt.Errorf("failed to open debug files: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Build arguments with --resume
+	args := []string{
+		"--print",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--allowedTools", strings.Join(cs.config.Tools, ","),
+		"--resume", sessionID, // Key argument for resumption
+	}
+
+	// Add all directories that are not empty
+	for _, dir := range dirs {
+		if dir != "" {
+			args = append(args, "--add-dir", dir)
+		}
+	}
+
+	if cs.debug {
+		slog.Debug("Claude CLI resume command prepared",
+			"correlation_id", correlationID,
+			"session_id", sessionID,
+			"command", "claude",
+			"args", strings.Join(args, " "),
+			"action", "claude_resume_cmd_prepared",
+		)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to start resumed claude process: %w", err)
+	}
+
+	process := &Process{
+		sessionID:     sessionID, // Use the existing session ID
+		cmd:           cmd,
+		stdin:         stdin,
+		stdout:        stdout,
+		stderr:        stderr,
+		stdoutScanner: bufio.NewScanner(stdout),
+		stderrScanner: bufio.NewScanner(stderr),
+		ctx:           ctx,
+		cancel:        cancel,
+		startTime:     startTime,
+		correlationID: correlationID,
+		debugDir:      debugDir,
+		stdinLogFile:  stdinLogFile,
+		stdoutLogFile: stdoutLogFile,
+		stderrLogFile: stderrLogFile,
+		isHealthy:     true,
+		lastHeartbeat: time.Now(),
+		inputChan:     make(chan Input, 10),
+		outputChan:    make(chan Message, 10),
+		initComplete:  make(chan bool, 1),
+		errorChan:     make(chan Message, 10),
+	}
+
+	// Start monitoring and handlers
+	go cs.service.monitorStderr(process)
+	go cs.service.handleStdout(process)
+	go cs.service.handleStdin(process)
+
+	// For resumed sessions, we don't send an initial message
+	// The session should already be initialized
+	select {
+	case <-process.initComplete:
+		slog.Info("Resumed Claude session initialized",
+			"correlation_id", correlationID,
+			"session_id", sessionID,
+			"action", "resumed_session_ready")
+	case <-time.After(10 * time.Second):
+		cancel()
+		process.closeDebugFiles()
+		return nil, fmt.Errorf("timeout waiting for resumed Claude session initialization")
+	case <-ctx.Done():
+		process.closeDebugFiles()
+		return nil, fmt.Errorf("context cancelled during resumed session initialization")
+	}
+
+	// Add to active sessions
+	cs.service.mu.Lock()
+	cs.service.sessions[sessionID] = process
+	cs.service.mu.Unlock()
+
+	slog.Info("Claude session resumed successfully",
+		"correlation_id", correlationID,
+		"session_id", sessionID,
+		"total_duration_ms", time.Since(startTime).Milliseconds(),
+		"action", "session_resumed")
+
+	return process, nil
+}
+
+// GetSessionInfo retrieves session information from database
+func (cs *ClaudeService) GetSessionInfo(threadTS, userID string) (*SessionInfo, error) {
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("user_id = ?", userID).First(&dbSession, "JSON_EXTRACT(metadata, '$.thread_ts') = ?", threadTS).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil // No session found
+		}
+		return nil, fmt.Errorf("failed to query session by thread: %w", err)
+	}
+
+	// Extract metadata
+	var threadTSFromDB, channelID, workingDir string
+	var lastActivity time.Time
+	var active bool
+
+	if dbSession.Metadata != nil {
+		metadata := dbSession.Metadata.Data
+		if ts, exists := metadata["thread_ts"]; exists {
+			if tsStr, ok := ts.(string); ok {
+				threadTSFromDB = tsStr
+			}
+		}
+		if ch, exists := metadata["channel_id"]; exists {
+			if chStr, ok := ch.(string); ok {
+				channelID = chStr
+			}
+		}
+		if wd, exists := metadata["working_dir"]; exists {
+			if wdStr, ok := wd.(string); ok {
+				workingDir = wdStr
+			}
+		}
+		if act, exists := metadata["active"]; exists {
+			if actBool, ok := act.(bool); ok {
+				active = actBool
+			}
+		}
+		if lastAct, exists := metadata["last_activity"]; exists {
+			if lastActStr, ok := lastAct.(string); ok {
+				if parsed, err := time.Parse(time.RFC3339, lastActStr); err == nil {
+					lastActivity = parsed
+				}
+			}
+		}
+	}
+
+	// Check if process exists in memory
+	cs.service.mu.RLock()
+	_, processExists := cs.service.sessions[dbSession.SessionID]
+	cs.service.mu.RUnlock()
+
+	return &SessionInfo{
+		SessionID:     dbSession.SessionID,
+		ThreadTS:      threadTSFromDB,
+		UserID:        userID,
+		ChannelID:     channelID,
+		WorkingDir:    workingDir,
+		LastActivity:  lastActivity,
+		Active:        active,
+		ProcessExists: processExists,
+	}, nil
+}
+
+// UpdateSessionActivity updates the last activity time for a session
+func (cs *ClaudeService) UpdateSessionActivity(sessionID string) error {
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ?", sessionID).First(&dbSession).Error
+	if err != nil {
+		return fmt.Errorf("failed to find session: %w", err)
+	}
+
+	// Update metadata
+	if dbSession.Metadata != nil {
+		metadata := dbSession.Metadata.Data
+		metadata["last_activity"] = time.Now().Format(time.RFC3339)
+	}
+
+	return cs.db.Save(&dbSession).Error
+}
+
+// DeactivateSession marks a session as inactive in the database
+func (cs *ClaudeService) DeactivateSession(sessionID string) error {
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ?", sessionID).First(&dbSession).Error
+	if err != nil {
+		return fmt.Errorf("failed to find session: %w", err)
+	}
+
+	// Update metadata
+	if dbSession.Metadata != nil {
+		metadata := dbSession.Metadata.Data
+		metadata["active"] = false
+		metadata["deactivated_at"] = time.Now().Format(time.RFC3339)
+	}
+
+	return cs.db.Save(&dbSession).Error
+}
+
+// copyFile copies a file from src to dst
+func (cs *ClaudeService) copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
+}
+
+// SendMessage sends a message to a Claude process
+func (cs *ClaudeService) SendMessage(process *Process, text string) error {
+	return cs.service.SendMessage(process, text)
+}
+
+// ReceiveMessages returns the output channel for a Claude process
+func (cs *ClaudeService) ReceiveMessages(process *Process) <-chan Message {
+	return cs.service.ReceiveMessages(process)
+}
+
+// StopSession stops a Claude session and marks it as inactive
+func (cs *ClaudeService) StopSession(sessionID string) {
+	// Stop the underlying process
+	cs.service.StopSession(sessionID)
+
+	// Mark session as inactive in database
+	if err := cs.DeactivateSession(sessionID); err != nil {
+		slog.Error("Failed to deactivate session in database",
+			"session_id", sessionID,
+			"error", err)
 	}
 }
