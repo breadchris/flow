@@ -136,6 +136,20 @@ func (s *SessionDBService) UpdateSessionActivity(threadTS string) error {
 	return nil
 }
 
+// SessionExists checks if a session exists in the database
+func (s *SessionDBService) SessionExists(threadTS string) (bool, error) {
+	var count int64
+	err := s.db.Model(&models.SlackSession{}).
+		Where("thread_ts = ?", threadTS).
+		Count(&count).Error
+	
+	if err != nil {
+		return false, fmt.Errorf("failed to check session existence: %w", err)
+	}
+	
+	return count > 0, nil
+}
+
 // RemoveSession marks a session as inactive
 func (s *SessionDBService) RemoveSession(threadTS string) error {
 	result := s.db.Model(&models.SlackSession{}).
