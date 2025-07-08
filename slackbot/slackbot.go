@@ -40,6 +40,7 @@ type SlackBot struct {
 	sessionCache       *SlackBotSessionCache   // Session cache
 	sessionActivityMgr *SessionActivityManager // Session activity manager with error handling
 	wg                 sync.WaitGroup          // Wait group for tracking goroutines
+	botUserID          string                  // Bot's own user ID to filter out self-messages
 }
 
 // SlackClaudeSession represents a Claude session tied to a Slack thread
@@ -142,6 +143,19 @@ func New(d deps.Deps) (*SlackBot, error) {
 		sessionActivityMgr: sessionActivityMgr,
 	}
 
+	// Get bot's own user ID to filter out self-messages
+	authResponse, err := client.AuthTest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bot user ID: %w", err)
+	}
+	bot.botUserID = authResponse.UserID
+
+	if slackConfig.Debug {
+		slog.Debug("SlackBot initialized", 
+			"bot_user_id", bot.botUserID,
+			"bot_user", authResponse.User)
+	}
+
 	return bot, nil
 }
 
@@ -207,8 +221,6 @@ func (b *SlackBot) Start(ctx context.Context) error {
 					}
 					return
 				}
-
-				slog.Debug("Received socket mode event", "type", evt.Type, "data", evt.Data)
 
 				switch evt.Type {
 				case socketmode.EventTypeConnecting:

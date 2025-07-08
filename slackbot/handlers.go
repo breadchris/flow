@@ -160,16 +160,77 @@ func (b *SlackBot) handleEventsAPI(evt *socketmode.Event, eventsAPIEvent *slacke
 	}
 }
 
+// isBotMentioned checks if the bot is mentioned in the message text
+func (b *SlackBot) isBotMentioned(text string) bool {
+	if b.botUserID == "" {
+		return false
+	}
+	
+	// Check for direct mention format: <@BOT_USER_ID> or <@BOT_USER_ID|username>
+	mentionPattern := fmt.Sprintf("<@%s", b.botUserID)
+	return strings.Contains(text, mentionPattern)
+}
+
 // handleMessageEvent processes message events (including thread replies)
 func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Ignore messages from bots and our own messages
 	if ev.BotID != "" || ev.User == "" {
+		if b.config.Debug {
+			slog.Debug("Ignoring message from bot", 
+				"bot_id", ev.BotID, 
+				"user", ev.User,
+				"text_preview", func() string {
+					if len(ev.Text) > 50 {
+						return ev.Text[:50] + "..."
+					}
+					return ev.Text
+				}())
+		}
+		return
+	}
+
+	// Ignore our own messages by checking user ID
+	if ev.User == b.botUserID {
+		if b.config.Debug {
+			slog.Debug("Ignoring bot's own message", 
+				"user_id", ev.User, 
+				"bot_user_id", b.botUserID,
+				"text_preview", func() string {
+					if len(ev.Text) > 50 {
+						return ev.Text[:50] + "..."
+					}
+					return ev.Text
+				}())
+		}
 		return
 	}
 
 	// Only handle thread replies (messages with ThreadTimeStamp)
 	if ev.ThreadTimeStamp == "" {
 		return
+	}
+
+	// Only process messages that mention the bot
+	if !b.isBotMentioned(ev.Text) {
+		if b.config.Debug {
+			slog.Debug("Ignoring thread message without bot mention", 
+				"user_id", ev.User,
+				"thread_ts", ev.ThreadTimeStamp,
+				"text_preview", func() string {
+					if len(ev.Text) > 50 {
+						return ev.Text[:50] + "..."
+					}
+					return ev.Text
+				}())
+		}
+		return
+	}
+
+	if b.config.Debug {
+		slog.Debug("Processing thread message with bot mention", 
+			"user_id", ev.User,
+			"thread_ts", ev.ThreadTimeStamp,
+			"text_length", len(ev.Text))
 	}
 
 	// Check if channel is allowed by whitelist
