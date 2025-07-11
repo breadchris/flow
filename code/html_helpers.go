@@ -1,18 +1,20 @@
 package code
 
 import (
+	"github.com/breadchris/flow/config"
 	. "github.com/breadchris/share/html"
 )
 
 // ReactImportMap returns a script tag with React import mappings
-func ReactImportMap() *Node {
+func ReactImportMap(c config.AppConfig) *Node {
 	return Script(Type("importmap"), Raw(`
     {
         "imports": {
             "react": "https://esm.sh/react@18",
             "react-dom": "https://esm.sh/react-dom@18",
             "react-dom/client": "https://esm.sh/react-dom@18/client",
-            "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+            "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime",
+			"supabase-kv": "`+c.ExternalURL+`/code/module/flow/supabase-kv.ts"
         }
     }
     `))
@@ -135,12 +137,12 @@ func BuildErrorPage(componentPath string, errorMessages []string) *Node {
 }
 
 // ReactComponentPage creates a page that renders a React component
-func ReactComponentPage(componentName string, additionalHeadNodes ...*Node) *Node {
+func ReactComponentPage(c config.AppConfig, componentName string, additionalHeadNodes ...*Node) *Node {
 	headNodes := []*Node{
 		Meta(Charset("UTF-8")),
 		Meta(Name("viewport"), Content("width=device-width, initial-scale=1.0")),
 		Title(T("React Component - " + componentName)),
-		ReactImportMap(),
+		ReactImportMap(c),
 		Link(Rel("stylesheet"), Type("text/css"), Href("https://cdn.jsdelivr.net/npm/daisyui@5")),
 		Script(Src("https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4")),
 		ComponentRuntimeStyles(),

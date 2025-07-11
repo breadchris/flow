@@ -165,7 +165,7 @@ func (b *SlackBot) isBotMentioned(text string) bool {
 	if b.botUserID == "" {
 		return false
 	}
-	
+
 	// Check for direct mention format: <@BOT_USER_ID> or <@BOT_USER_ID|username>
 	mentionPattern := fmt.Sprintf("<@%s", b.botUserID)
 	return strings.Contains(text, mentionPattern)
@@ -176,8 +176,8 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Ignore messages from bots and our own messages
 	if ev.BotID != "" || ev.User == "" {
 		if b.config.Debug {
-			slog.Debug("Ignoring message from bot", 
-				"bot_id", ev.BotID, 
+			slog.Debug("Ignoring message from bot",
+				"bot_id", ev.BotID,
 				"user", ev.User,
 				"text_preview", func() string {
 					if len(ev.Text) > 50 {
@@ -192,8 +192,8 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Ignore our own messages by checking user ID
 	if ev.User == b.botUserID {
 		if b.config.Debug {
-			slog.Debug("Ignoring bot's own message", 
-				"user_id", ev.User, 
+			slog.Debug("Ignoring bot's own message",
+				"user_id", ev.User,
 				"bot_user_id", b.botUserID,
 				"text_preview", func() string {
 					if len(ev.Text) > 50 {
@@ -213,7 +213,7 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Only process messages that mention the bot
 	if !b.isBotMentioned(ev.Text) {
 		if b.config.Debug {
-			slog.Debug("Ignoring thread message without bot mention", 
+			slog.Debug("Ignoring thread message without bot mention",
 				"user_id", ev.User,
 				"thread_ts", ev.ThreadTimeStamp,
 				"text_preview", func() string {
@@ -227,7 +227,7 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	if b.config.Debug {
-		slog.Debug("Processing thread message with bot mention", 
+		slog.Debug("Processing thread message with bot mention",
 			"user_id", ev.User,
 			"thread_ts", ev.ThreadTimeStamp,
 			"text_length", len(ev.Text))
@@ -396,15 +396,13 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 // handleAppMentionEvent processes app mention events
 func (b *SlackBot) handleAppMentionEvent(ev *slackevents.AppMentionEvent) {
-	// Check if channel is allowed by whitelist
-	if !b.isChannelAllowed(ev.Channel) {
-		if b.config.Debug {
-			slog.Debug("App mention rejected - channel not in whitelist",
-				"channel_id", ev.Channel,
-				"user_id", ev.User)
-		}
-		// Silently ignore - no response to avoid revealing bot presence
-		return
+	// Note: App mentions are allowed from ANY channel to enable Claude sessions everywhere
+	// Channel whitelist restrictions are preserved for slash commands and thread replies
+	if b.config.Debug {
+		slog.Debug("Processing app mention from any channel",
+			"channel_id", ev.Channel,
+			"user_id", ev.User,
+			"channel_whitelisted", b.isChannelAllowed(ev.Channel))
 	}
 
 	// For now, treat app mentions like /flow commands
@@ -1372,16 +1370,24 @@ func (b *SlackBot) handleFileSharedEvent(ev *slackevents.FileSharedEvent) {
 		return
 	}
 
-	// Check if file is an image type we support
-	if !b.isImageFile(file.Mimetype) {
+	// Check if file is a supported type
+	if !b.isSupportedFile(file.Mimetype, int64(file.Size)) {
 		slog.Info("Unsupported file type uploaded",
 			"file_id", ev.FileID,
 			"mimetype", file.Mimetype,
+			"size", file.Size,
 			"thread_ts", threadTS)
 
-		// Optionally notify user about unsupported file type
-		_, err := b.postMessage(ev.ChannelID, threadTS,
-			fmt.Sprintf("⚠️ Uploaded file '%s' is not a supported image format. Supported formats: PNG, JPG, JPEG, GIF, WebP", file.Name))
+		// Notify user about unsupported file type or size
+		category := b.getFileCategory(file.Mimetype)
+		var message string
+		if category == "unsupported" {
+			message = fmt.Sprintf("⚠️ Uploaded file '%s' has an unsupported format (%s). Supported formats: Images (PNG, JPG, GIF, WebP), Documents (PDF, TXT, MD, CSV), Code files (JS, PY, GO, HTML, CSS, JSON, XML, YAML), and Office files (DOCX, XLSX, PPTX)", file.Name, file.Mimetype)
+		} else {
+			maxSize := b.getMaxFileSize(file.Mimetype)
+			message = fmt.Sprintf("⚠️ Uploaded file '%s' exceeds maximum size limit. File size: %d bytes, Maximum allowed: %d bytes", file.Name, file.Size, maxSize)
+		}
+		_, err := b.postMessage(ev.ChannelID, threadTS, message)
 		if err != nil {
 			slog.Error("Failed to post unsupported file message", "error", err)
 		}
@@ -1392,22 +1398,150 @@ func (b *SlackBot) handleFileSharedEvent(ev *slackevents.FileSharedEvent) {
 	go b.downloadAndStoreFile(file, ev.UserID, ev.ChannelID, threadTS)
 }
 
-// isImageFile checks if the file type is a supported image format
-func (b *SlackBot) isImageFile(mimetype string) bool {
-	supportedTypes := []string{
-		"image/png",
-		"image/jpeg",
-		"image/jpg",
-		"image/gif",
-		"image/webp",
+// isSupportedFile checks if the file type and size are supported
+func (b *SlackBot) isSupportedFile(mimetype string, size int64) bool {
+	// Check if file type is supported
+	if b.getFileCategory(mimetype) == "unsupported" {
+		return false
 	}
 
-	for _, supportedType := range supportedTypes {
-		if mimetype == supportedType {
-			return true
+	// Check file size limits
+	maxSize := b.getMaxFileSize(mimetype)
+	if size > maxSize {
+		return false
+	}
+
+	return true
+}
+
+// getFileCategory determines the category of a file based on its MIME type
+func (b *SlackBot) getFileCategory(mimetype string) string {
+	// Image files
+	imageTypes := []string{
+		"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp",
+		"image/bmp", "image/tiff", "image/svg+xml",
+	}
+
+	// Document files
+	documentTypes := []string{
+		"application/pdf", "text/plain", "text/markdown", "text/csv",
+		"application/rtf", "application/msword",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-powerpoint",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	}
+
+	// Code files
+	codeTypes := []string{
+		"text/javascript", "application/javascript", "text/x-python", "text/x-go",
+		"text/html", "text/css", "application/json", "text/xml", "application/xml",
+		"text/yaml", "application/yaml", "text/x-yaml", "text/x-c", "text/x-cpp",
+		"text/x-java", "text/x-php", "text/x-ruby", "text/x-shell", "text/x-sql",
+		"application/typescript", "text/typescript",
+	}
+
+	// Archive files
+	archiveTypes := []string{
+		"application/zip", "application/x-tar", "application/gzip",
+		"application/x-rar-compressed", "application/x-7z-compressed",
+	}
+
+	for _, t := range imageTypes {
+		if mimetype == t {
+			return "image"
 		}
 	}
-	return false
+
+	for _, t := range documentTypes {
+		if mimetype == t {
+			return "document"
+		}
+	}
+
+	for _, t := range codeTypes {
+		if mimetype == t {
+			return "code"
+		}
+	}
+
+	for _, t := range archiveTypes {
+		if mimetype == t {
+			return "archive"
+		}
+	}
+
+	// Check for text files with generic mime types
+	if strings.HasPrefix(mimetype, "text/") {
+		return "text"
+	}
+
+	return "unsupported"
+}
+
+// getMaxFileSize returns the maximum allowed file size for a given MIME type
+func (b *SlackBot) getMaxFileSize(mimetype string) int64 {
+	category := b.getFileCategory(mimetype)
+
+	switch category {
+	case "image":
+		return 10 * 1024 * 1024 // 10 MB for images
+	case "document":
+		return 50 * 1024 * 1024 // 50 MB for documents
+	case "code", "text":
+		return 1 * 1024 * 1024 // 1 MB for code/text files
+	case "archive":
+		return 100 * 1024 * 1024 // 100 MB for archives
+	default:
+		return 10 * 1024 * 1024 // 10 MB default
+	}
+}
+
+// getFileMimeType retrieves the MIME type of a file from the database
+func (b *SlackBot) getFileMimeType(filename, threadTS string) string {
+	// Query database for file metadata
+	var fileUpload models.SlackFileUpload
+	if err := b.sessionDB.db.Where("file_name = ? AND thread_ts = ?", filename, threadTS).First(&fileUpload).Error; err != nil {
+		// If not found in database, try to guess from filename extension
+		return b.guessMimeTypeFromFilename(filename)
+	}
+	return fileUpload.MimeType
+}
+
+// guessMimeTypeFromFilename attempts to guess MIME type from file extension
+func (b *SlackBot) guessMimeTypeFromFilename(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+
+	mimeMap := map[string]string{
+		".png":  "image/png",
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".pdf":  "application/pdf",
+		".txt":  "text/plain",
+		".md":   "text/markdown",
+		".csv":  "text/csv",
+		".js":   "text/javascript",
+		".py":   "text/x-python",
+		".go":   "text/x-go",
+		".html": "text/html",
+		".css":  "text/css",
+		".json": "application/json",
+		".xml":  "application/xml",
+		".yaml": "text/yaml",
+		".yml":  "text/yaml",
+		".zip":  "application/zip",
+		".tar":  "application/x-tar",
+		".gz":   "application/gzip",
+	}
+
+	if mimeType, exists := mimeMap[ext]; exists {
+		return mimeType
+	}
+
+	return "application/octet-stream"
 }
 
 // downloadAndStoreFile downloads a file from Slack and stores it locally
@@ -1506,8 +1640,25 @@ func (b *SlackBot) downloadAndStoreFile(file *slack.File, userID, channelID, thr
 	b.notifyClaudeAboutFile(filename, channelID, threadTS)
 
 	// Send confirmation to user
-	message := fmt.Sprintf("✅ Image uploaded successfully: `%s` (%d bytes)\nClaude can now analyze this image!",
-		filename, bytesWritten)
+	category := b.getFileCategory(file.Mimetype)
+	var fileTypeDescription string
+	switch category {
+	case "image":
+		fileTypeDescription = "image"
+	case "document":
+		fileTypeDescription = "document"
+	case "code":
+		fileTypeDescription = "code file"
+	case "text":
+		fileTypeDescription = "text file"
+	case "archive":
+		fileTypeDescription = "archive file"
+	default:
+		fileTypeDescription = "file"
+	}
+
+	message := fmt.Sprintf("✅ %s uploaded successfully: `%s` (%d bytes)\nClaude can now analyze this %s!",
+		strings.Title(fileTypeDescription), filename, bytesWritten, fileTypeDescription)
 	_, err = b.postMessage(channelID, threadTS, message)
 	if err != nil {
 		slog.Error("Failed to post success message", "error", err)
@@ -1536,8 +1687,33 @@ func (b *SlackBot) notifyClaudeAboutFile(filename, channelID, threadTS string) {
 	}
 
 	// Send notification message to Claude
-	notificationMessage := fmt.Sprintf("A new image has been uploaded to this conversation: %s. You can now analyze this image using your Read tool with the file path: ./data/slack-uploads/%s/%s",
-		filename, threadTS, filename)
+	category := b.getFileCategory(b.getFileMimeType(filename, threadTS))
+	var fileTypeDescription string
+	var analysisHint string
+
+	switch category {
+	case "image":
+		fileTypeDescription = "image"
+		analysisHint = "You can analyze this image, describe its contents, extract text, or answer questions about it."
+	case "document":
+		fileTypeDescription = "document"
+		analysisHint = "You can read and analyze this document, extract key information, summarize its contents, or answer questions about it."
+	case "code":
+		fileTypeDescription = "code file"
+		analysisHint = "You can review this code, suggest improvements, identify bugs, explain functionality, or help with refactoring."
+	case "text":
+		fileTypeDescription = "text file"
+		analysisHint = "You can read and analyze this text file, extract information, or answer questions about its contents."
+	case "archive":
+		fileTypeDescription = "archive file"
+		analysisHint = "You can examine this archive file, though you may need to extract it first to analyze its contents."
+	default:
+		fileTypeDescription = "file"
+		analysisHint = "You can examine this file using your Read tool."
+	}
+
+	notificationMessage := fmt.Sprintf("A new %s has been uploaded to this conversation: %s. File path: ./data/slack-uploads/%s/%s\n\n%s",
+		fileTypeDescription, filename, threadTS, filename, analysisHint)
 
 	// Update session activity
 	b.updateSessionActivity(threadTS)
@@ -1608,6 +1784,7 @@ func (b *SlackBot) recordFileUpload(file *slack.File, filename, localPath, userI
 		FileName:     filename,
 		OriginalName: file.Name,
 		MimeType:     file.Mimetype,
+		Category:     b.getFileCategory(file.Mimetype),
 		FileSize:     fileSize,
 		LocalPath:    localPath,
 		UploadedAt:   time.Now(),

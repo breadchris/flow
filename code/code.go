@@ -38,7 +38,7 @@ func New(d deps.Deps) *http.ServeMux {
 	m := http.NewServeMux()
 
 	m.HandleFunc("/render/", func(w http.ResponseWriter, r *http.Request) {
-		handleRenderComponent(w, r)
+		handleRenderComponent(d)(w, r)
 	})
 
 	m.HandleFunc("/module/", func(w http.ResponseWriter, r *http.Request) {
@@ -122,73 +122,74 @@ func buildDirectoryListing(baseDir, relativePath string, maxDepth int) ([]FileIn
 }
 
 // handleRenderComponent builds and renders a React component in a simple HTML page
-func handleRenderComponent(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func handleRenderComponent(d deps.Deps) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	// Extract path from URL
-	componentPath := strings.TrimPrefix(r.URL.Path, "/render/")
-	if componentPath == "" {
-		http.Error(w, "Component path is required", http.StatusBadRequest)
-		return
-	}
+		// Extract path from URL
+		componentPath := strings.TrimPrefix(r.URL.Path, "/render/")
+		if componentPath == "" {
+			http.Error(w, "Component path is required", http.StatusBadRequest)
+			return
+		}
 
-	// Get component name from query parameter (optional)
-	componentName := r.URL.Query().Get("component")
-	if componentName == "" {
-		componentName = "App" // Default to App component
-	}
+		// Get component name from query parameter (optional)
+		componentName := r.URL.Query().Get("component")
+		if componentName == "" {
+			componentName = "App" // Default to App component
+		}
 
-	// Validate and sanitize the path
-	cleanPath := filepath.Clean(componentPath)
-	if strings.Contains(cleanPath, "..") {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
-		return
-	}
+		// Validate and sanitize the path
+		cleanPath := filepath.Clean(componentPath)
+		if strings.Contains(cleanPath, "..") {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
 
-	// Build source path
-	srcPath := filepath.Join("./", cleanPath)
+		// Build source path
+		srcPath := filepath.Join("./", cleanPath)
 
-	// Check if source file exists
-	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		http.Error(w, "Source file not found", http.StatusNotFound)
-		return
-	}
+		// Check if source file exists
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			http.Error(w, "Source file not found", http.StatusNotFound)
+			return
+		}
 
-	// Read the source code to build
-	sourceCode, err := os.ReadFile(srcPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to read source file: %v", err), http.StatusInternalServerError)
-		return
-	}
+		// Read the source code to build
+		sourceCode, err := os.ReadFile(srcPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to read source file: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-	// Build with esbuild to get the compiled JavaScript
-	result := api.Build(api.BuildOptions{
-		Stdin: &api.StdinOptions{
-			Contents:   string(sourceCode),
-			ResolveDir: filepath.Dir(srcPath),
-			Sourcefile: filepath.Base(srcPath),
-			Loader:     api.LoaderTSX,
-		},
-		Loader: map[string]api.Loader{
-			".js":  api.LoaderJS,
-			".jsx": api.LoaderJSX,
-			".ts":  api.LoaderTS,
-			".tsx": api.LoaderTSX,
-			".css": api.LoaderCSS,
-		},
-		Format:          api.FormatESModule,
-		Bundle:          true,
-		Write:           false,
-		TreeShaking:     api.TreeShakingTrue,
-		Target:          api.ESNext,
-		JSX:             api.JSXAutomatic,
-		JSXImportSource: "react",
-		LogLevel:        api.LogLevelSilent,
-		External:        []string{"react", "react-dom", "react-player"},
-		TsconfigRaw: `{
+		// Build with esbuild to get the compiled JavaScript
+		result := api.Build(api.BuildOptions{
+			Stdin: &api.StdinOptions{
+				Contents:   string(sourceCode),
+				ResolveDir: filepath.Dir(srcPath),
+				Sourcefile: filepath.Base(srcPath),
+				Loader:     api.LoaderTSX,
+			},
+			Loader: map[string]api.Loader{
+				".js":  api.LoaderJS,
+				".jsx": api.LoaderJSX,
+				".ts":  api.LoaderTS,
+				".tsx": api.LoaderTSX,
+				".css": api.LoaderCSS,
+			},
+			Format:          api.FormatESModule,
+			Bundle:          true,
+			Write:           false,
+			TreeShaking:     api.TreeShakingTrue,
+			Target:          api.ESNext,
+			JSX:             api.JSXAutomatic,
+			JSXImportSource: "react",
+			LogLevel:        api.LogLevelSilent,
+			External:        []string{"react", "react-dom", "react-player", "supabase-kv"},
+			TsconfigRaw: `{
 			"compilerOptions": {
 				"jsx": "react-jsx",
 				"allowSyntheticDefaultImports": true,
@@ -206,34 +207,35 @@ func handleRenderComponent(w http.ResponseWriter, r *http.Request) {
 				"isolatedModules": true
 			}
 		}`,
-	})
+		})
 
-	// Check for build errors
-	if len(result.Errors) > 0 {
-		errorMessages := make([]string, len(result.Errors))
-		for i, err := range result.Errors {
-			errorMessages[i] = fmt.Sprintf("%s:%d:%d: %s", err.Location.File, err.Location.Line, err.Location.Column, err.Text)
+		// Check for build errors
+		if len(result.Errors) > 0 {
+			errorMessages := make([]string, len(result.Errors))
+			for i, err := range result.Errors {
+				errorMessages[i] = fmt.Sprintf("%s:%d:%d: %s", err.Location.File, err.Location.Line, err.Location.Column, err.Text)
+			}
+
+			// Use the BuildErrorPage helper
+			w.WriteHeader(http.StatusBadRequest)
+			BuildErrorPage(componentPath, errorMessages).RenderPage(w, r)
+			return
 		}
 
-		// Use the BuildErrorPage helper
-		w.WriteHeader(http.StatusBadRequest)
-		BuildErrorPage(componentPath, errorMessages).RenderPage(w, r)
-		return
+		// Verify build succeeded
+		if len(result.OutputFiles) == 0 {
+			http.Error(w, "No output generated from build", http.StatusInternalServerError)
+			return
+		}
+
+		// Generate the HTML page using Go HTML format
+		page := ReactComponentPage(d.Config, componentName,
+			ComponentLoader(componentPath, componentName, true),
+		)
+
+		// Render the page
+		page.RenderPage(w, r)
 	}
-
-	// Verify build succeeded
-	if len(result.OutputFiles) == 0 {
-		http.Error(w, "No output generated from build", http.StatusInternalServerError)
-		return
-	}
-
-	// Generate the HTML page using Go HTML format
-	page := ReactComponentPage(componentName,
-		ComponentLoader(componentPath, componentName, true),
-	)
-
-	// Render the page
-	page.RenderPage(w, r)
 }
 
 // handleServeModule builds and serves a React component as an ES module
@@ -273,13 +275,25 @@ func handleServeModule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var loader api.Loader
+	switch filepath.Ext(srcPath) {
+	case ".js":
+		loader = api.LoaderJS
+	case ".jsx":
+		loader = api.LoaderJSX
+	case ".ts":
+		loader = api.LoaderTS
+	case ".tsx":
+		loader = api.LoaderTSX
+	}
+
 	// Build with esbuild to get the compiled JavaScript as ES module
 	result := api.Build(api.BuildOptions{
 		Stdin: &api.StdinOptions{
 			Contents:   string(sourceCode),
 			ResolveDir: filepath.Dir(srcPath),
 			Sourcefile: filepath.Base(srcPath),
-			Loader:     api.LoaderTSX,
+			Loader:     loader,
 		},
 		Loader: map[string]api.Loader{
 			".js":  api.LoaderJS,
@@ -296,7 +310,7 @@ func handleServeModule(w http.ResponseWriter, r *http.Request) {
 		JSX:             api.JSXAutomatic,
 		JSXImportSource: "react",
 		LogLevel:        api.LogLevelSilent,
-		External:        []string{"react", "react-dom", "react-dom/client", "react/jsx-runtime"},
+		External:        []string{"react", "react-dom", "react-dom/client", "react/jsx-runtime", "supabase-kv"},
 		TsconfigRaw: `{
 			"compilerOptions": {
 				"jsx": "react-jsx",

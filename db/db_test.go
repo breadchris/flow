@@ -1,6 +1,11 @@
 package db
 
-import "testing"
+import (
+	"github.com/breadchris/flow/config"
+	"testing"
+)
 
-func TestClaudeMigrate(t *testing.T) {
+func TestMigrate(t *testing.T) {
+	cfg := config.LoadConfig()
+	_ = NewClaudeDB(cfg.SupabaseURL)
 }

@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instanciate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "12.2.3 (519615d)"
+  }
   public: {
     Tables: {
       ai_recipe_generations: {
@@ -1113,6 +1118,272 @@ export type Database = {
         }
         Relationships: []
       }
+      session_kv_stores: {
+        Row: {
+          created_at: string | null
+          deleted_at: string | null
+          id: string
+          key: string
+          namespace: string
+          session_id: string
+          updated_at: string | null
+          value: Json
+        }
+        Insert: {
+          created_at?: string | null
+          deleted_at?: string | null
+          id: string
+          key: string
+          namespace?: string
+          session_id: string
+          updated_at?: string | null
+          value: Json
+        }
+        Update: {
+          created_at?: string | null
+          deleted_at?: string | null
+          id?: string
+          key?: string
+          namespace?: string
+          session_id?: string
+          updated_at?: string | null
+          value?: Json
+        }
+        Relationships: []
+      }
+      slack_file_uploads: {
+        Row: {
+          category: string | null
+          channel_id: string
+          created_at: string | null
+          deleted_at: string | null
+          downloaded: boolean | null
+          downloaded_at: string | null
+          file_name: string
+          file_size: number | null
+          id: string
+          local_path: string
+          mime_type: string | null
+          original_name: string
+          session_id: string | null
+          slack_file_id: string
+          thread_ts: string
+          updated_at: string | null
+          uploaded_at: string | null
+          user_id: string
+        }
+        Insert: {
+          category?: string | null
+          channel_id: string
+          created_at?: string | null
+          deleted_at?: string | null
+          downloaded?: boolean | null
+          downloaded_at?: string | null
+          file_name: string
+          file_size?: number | null
+          id: string
+          local_path: string
+          mime_type?: string | null
+          original_name: string
+          session_id?: string | null
+          slack_file_id: string
+          thread_ts: string
+          updated_at?: string | null
+          uploaded_at?: string | null
+          user_id: string
+        }
+        Update: {
+          category?: string | null
+          channel_id?: string
+          created_at?: string | null
+          deleted_at?: string | null
+          downloaded?: boolean | null
+          downloaded_at?: string | null
+          file_name?: string
+          file_size?: number | null
+          id?: string
+          local_path?: string
+          mime_type?: string | null
+          original_name?: string
+          session_id?: string | null
+          slack_file_id?: string
+          thread_ts?: string
+          updated_at?: string | null
+          uploaded_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_slack_file_uploads_user"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      slack_ideation_sessions: {
+        Row: {
+          active: boolean | null
+          channel_id: string
+          chat_history: Json | null
+          created_at: string | null
+          deleted_at: string | null
+          features: Json | null
+          id: string
+          last_activity: string | null
+          message_ts: Json | null
+          original_idea: string | null
+          preferences: Json | null
+          session_id: string
+          thread_id: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          active?: boolean | null
+          channel_id: string
+          chat_history?: Json | null
+          created_at?: string | null
+          deleted_at?: string | null
+          features?: Json | null
+          id: string
+          last_activity?: string | null
+          message_ts?: Json | null
+          original_idea?: string | null
+          preferences?: Json | null
+          session_id: string
+          thread_id: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          active?: boolean | null
+          channel_id?: string
+          chat_history?: Json | null
+          created_at?: string | null
+          deleted_at?: string | null
+          features?: Json | null
+          id?: string
+          last_activity?: string | null
+          message_ts?: Json | null
+          original_idea?: string | null
+          preferences?: Json | null
+          session_id?: string
+          thread_id?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_slack_ideation_sessions_user"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      slack_sessions: {
+        Row: {
+          active: boolean | null
+          channel_id: string
+          context: string | null
+          created_at: string | null
+          deleted_at: string | null
+          id: string
+          last_activity: string | null
+          process_id: string | null
+          resumed: boolean | null
+          session_id: string | null
+          thread_ts: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          active?: boolean | null
+          channel_id: string
+          context?: string | null
+          created_at?: string | null
+          deleted_at?: string | null
+          id: string
+          last_activity?: string | null
+          process_id?: string | null
+          resumed?: boolean | null
+          session_id?: string | null
+          thread_ts: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          active?: boolean | null
+          channel_id?: string
+          context?: string | null
+          created_at?: string | null
+          deleted_at?: string | null
+          id?: string
+          last_activity?: string | null
+          process_id?: string | null
+          resumed?: boolean | null
+          session_id?: string | null
+          thread_ts?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_slack_sessions_user"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      slack_user_activities: {
+        Row: {
+          created_at: string | null
+          deleted_at: string | null
+          id: string
+          last_seen: string | null
+          message_count: number | null
+          session_start: string | null
+          thread_ts: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          deleted_at?: string | null
+          id: string
+          last_seen?: string | null
+          message_count?: number | null
+          session_start?: string | null
+          thread_ts: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          deleted_at?: string | null
+          id?: string
+          last_seen?: string | null
+          message_count?: number | null
+          session_start?: string | null
+          thread_ts?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_slack_user_activities_user"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tags: {
         Row: {
           color: string | null
@@ -1147,6 +1418,68 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "fk_tags_user"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      thread_contexts: {
+        Row: {
+          active: boolean | null
+          channel_id: string
+          created_at: string | null
+          deleted_at: string | null
+          id: string
+          key_metrics: Json | null
+          last_activity: string | null
+          next_steps: Json | null
+          original_prompt: string | null
+          pinned_message: string | null
+          session_type: string | null
+          summary: string | null
+          thread_ts: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          active?: boolean | null
+          channel_id: string
+          created_at?: string | null
+          deleted_at?: string | null
+          id: string
+          key_metrics?: Json | null
+          last_activity?: string | null
+          next_steps?: Json | null
+          original_prompt?: string | null
+          pinned_message?: string | null
+          session_type?: string | null
+          summary?: string | null
+          thread_ts: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          active?: boolean | null
+          channel_id?: string
+          created_at?: string | null
+          deleted_at?: string | null
+          id?: string
+          key_metrics?: Json | null
+          last_activity?: string | null
+          next_steps?: Json | null
+          original_prompt?: string | null
+          pinned_message?: string | null
+          session_type?: string | null
+          summary?: string | null
+          thread_ts?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_thread_contexts_user"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "users"
@@ -1268,36 +1601,6 @@ export type Database = {
         }
         Relationships: []
       }
-      session_kv_store: {
-        Row: {
-          created_at: string | null
-          id: string
-          key: string
-          namespace: string
-          session_id: string
-          updated_at: string | null
-          value: Json
-        }
-        Insert: {
-          created_at?: string | null
-          id?: string
-          key: string
-          namespace?: string
-          session_id: string
-          updated_at?: string | null
-          value: Json
-        }
-        Update: {
-          created_at?: string | null
-          id?: string
-          key?: string
-          namespace?: string
-          session_id?: string
-          updated_at?: string | null
-          value?: Json
-        }
-        Relationships: []
-      }
       users: {
         Row: {
           created_at: string | null
@@ -1399,21 +1702,25 @@ export type Database = {
   }
 }
 
-type DefaultSchema = Database[Extract<keyof Database, "public">]
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
 
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
-    | { schema: keyof Database },
+    | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof Database
+    schema: keyof DatabaseWithoutInternals
   }
-    ? keyof (Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-        Database[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
     : never = never,
-> = DefaultSchemaTableNameOrOptions extends { schema: keyof Database }
-  ? (Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-      Database[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
       Row: infer R
     }
     ? R
@@ -1431,14 +1738,16 @@ export type Tables<
 export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
-    | { schema: keyof Database },
+    | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof Database
+    schema: keyof DatabaseWithoutInternals
   }
-    ? keyof Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
     : never = never,
-> = DefaultSchemaTableNameOrOptions extends { schema: keyof Database }
-  ? Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Insert: infer I
     }
     ? I
@@ -1454,14 +1763,16 @@ export type TablesInsert<
 export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
-    | { schema: keyof Database },
+    | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof Database
+    schema: keyof DatabaseWithoutInternals
   }
-    ? keyof Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
     : never = never,
-> = DefaultSchemaTableNameOrOptions extends { schema: keyof Database }
-  ? Database[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Update: infer U
     }
     ? U
@@ -1477,14 +1788,16 @@ export type TablesUpdate<
 export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
-    | { schema: keyof Database },
+    | { schema: keyof DatabaseWithoutInternals },
   EnumName extends DefaultSchemaEnumNameOrOptions extends {
-    schema: keyof Database
+    schema: keyof DatabaseWithoutInternals
   }
-    ? keyof Database[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
     : never = never,
-> = DefaultSchemaEnumNameOrOptions extends { schema: keyof Database }
-  ? Database[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
   : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
     ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
     : never
@@ -1492,14 +1805,16 @@ export type Enums<
 export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
-    | { schema: keyof Database },
+    | { schema: keyof DatabaseWithoutInternals },
   CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
-    schema: keyof Database
+    schema: keyof DatabaseWithoutInternals
   }
-    ? keyof Database[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
     : never = never,
-> = PublicCompositeTypeNameOrOptions extends { schema: keyof Database }
-  ? Database[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
   : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
     ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
     : never

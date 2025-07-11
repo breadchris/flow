@@ -43,9 +43,8 @@ export const supabaseConfig: SupabaseConfig = {
  */
 export function getSupabaseConfig(): SupabaseConfig {
   return {
-    url: process.env.REACT_APP_SUPABASE_URL || supabaseConfig.url,
-    anonKey: process.env.REACT_APP_SUPABASE_ANON_KEY || supabaseConfig.anonKey,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY
+    url: supabaseConfig.url,
+    anonKey: supabaseConfig.anonKey
   };
 }
 
@@ -201,7 +200,7 @@ export class SessionKVStore {
 
     await this.executeOperation(async () => {
       const { error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .upsert({
           session_id: this.sessionId,
           namespace,
@@ -224,7 +223,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('value')
         .eq('session_id', this.sessionId)
         .eq('namespace', namespace)
@@ -251,7 +250,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('id')
         .eq('session_id', this.sessionId)
         .eq('namespace', namespace)
@@ -278,7 +277,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       const { error, count } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .delete({ count: 'exact' })
         .eq('session_id', this.sessionId)
         .eq('namespace', namespace)
@@ -323,7 +322,7 @@ export class SessionKVStore {
       }));
 
       const { error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .upsert(rows);
 
       if (error) {
@@ -351,7 +350,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('key, value')
         .eq('session_id', this.sessionId)
         .eq('namespace', namespace)
@@ -382,7 +381,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       let query = this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('key')
         .eq('session_id', this.sessionId)
         .range(offset, offset + limit - 1);
@@ -416,7 +415,7 @@ export class SessionKVStore {
   async listNamespaces(): Promise<string[]> {
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('namespace')
         .eq('session_id', this.sessionId)
         .order('namespace');
@@ -441,7 +440,7 @@ export class SessionKVStore {
 
     return await this.executeOperation(async () => {
       let query = this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .delete({ count: 'exact' })
         .eq('session_id', this.sessionId);
 
@@ -513,7 +512,7 @@ export class SessionKVStore {
   async getStats(): Promise<KVStats> {
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('namespace, value, updated_at')
         .eq('session_id', this.sessionId);
 
@@ -549,7 +548,7 @@ export class SessionKVStore {
   async exportData(): Promise<Record<string, Record<string, any>>> {
     return await this.executeOperation(async () => {
       const { data, error } = await this.supabase
-        .from('session_kv_store')
+        .from('session_kv_stores')
         .select('namespace, key, value')
         .eq('session_id', this.sessionId)
         .order('namespace')

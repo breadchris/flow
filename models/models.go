@@ -517,6 +517,7 @@ type SlackFileUpload struct {
 	FileName     string    `json:"file_name" gorm:"not null"`
 	OriginalName string    `json:"original_name" gorm:"not null"`
 	MimeType     string    `json:"mime_type"`
+	Category     string    `json:"category" gorm:"index"` // File category: image, document, code, text, archive, etc.
 	FileSize     int64     `json:"file_size"`
 	LocalPath    string    `json:"local_path" gorm:"not null"` // Path where file is stored locally
 	UploadedAt   time.Time `json:"uploaded_at"`

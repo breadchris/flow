@@ -280,64 +280,6 @@ func (config *PinnedDocsConfig) IsPinned(docID string) bool {
 	return false
 }
 
-func LoadDB(dsn string) *gorm.DB {
-	var (
-		db  *gorm.DB
-		err error
-	)
-	if strings.HasPrefix(dsn, "postgres://") {
-		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
-		if err != nil {
-			log.Fatalf("Failed to create db: %v", err)
-		}
-	} else if strings.HasPrefix(dsn, "sqlite://") {
-		dsn = strings.TrimPrefix(dsn, "sqlite://")
-		db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{})
-		if err != nil {
-			log.Fatalf("Failed to create db: %v", err)
-		}
-	} else {
-		log.Fatalf("Unknown db: %s", dsn)
-	}
-
-	if err := db.AutoMigrate(
-		&models.User{},
-		&models.Identity{},
-		&models.Group{},
-		&models.GroupMembership{},
-		&models.Food{},
-		&models.FoodName{},
-		&models.Prompt{},
-		&models.PromptRun{},
-		&models.Page{},
-		&models.Recipe{},
-		&models.Tag{},
-		&models.Ingredient{},
-		&models.Equipment{},
-		&models.Direction{},
-		&models.PromptContext{},
-		&models.ContentTag{},
-		&models.Content{},
-		&models.ClaudeDoc{},
-		&models.ClaudeDocTag{},
-		&models.ClaudeDocStar{},
-		&models.ClaudeSession{},
-		// New Slack persistence models
-		&models.SlackSession{},
-		&models.ThreadContext{},
-		&models.SlackUserActivity{},
-		&models.SlackIdeationSession{},
-		&models.SlackFileUpload{},
-		// Session-based key-value store
-		&models.SessionKVStore{},
-		// Deprecated worklet KV store (for backward compatibility)
-		&models.WorkletKVStore{},
-	); err != nil {
-		log.Fatalf("Failed to migrate db: %v", err)
-	}
-	return db
-}
-
 // NewClaudeDB creates a new database connection for Claude operations
 func NewClaudeDB(dsn string) *gorm.DB {
 	var (
@@ -367,6 +309,7 @@ func NewClaudeDB(dsn string) *gorm.DB {
 		&models.SlackUserActivity{},
 		&models.SlackIdeationSession{},
 		&models.SlackFileUpload{},
+		&models.SessionKVStore{},
 	); err != nil {
 		log.Fatalf("Failed to migrate db: %v", err)
 	}
