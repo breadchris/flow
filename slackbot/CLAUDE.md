@@ -56,13 +56,75 @@ export SLACK_BOT_TOKEN=xoxb-...       # Bot User OAuth token
 Or configure in application config:
 ```json
 {
-  "slack_bot_enabled": true,
-  "slack_app_token": "xapp-1-...",
-  "slack_bot_token": "xoxb-...",
-  "session_timeout": "30m",
-  "max_sessions": 10
+  "slack_bot": {
+    "enabled": true,
+    "token": "xapp-1-...",
+    "bot_token": "xoxb-...",
+    "session_timeout": "30m",
+    "max_sessions": 10,
+    "channel_whitelist": ["C1234567890", "^C.*DEV$"]
+  }
 }
 ```
+
+### Channel Whitelist
+
+The bot supports channel-based access control using regex patterns. This allows you to restrict which Slack channels can use the bot commands.
+
+#### Configuration
+
+The `channel_whitelist` field accepts an array of regex patterns that match against Slack channel IDs:
+
+```json
+{
+  "slack_bot": {
+    "channel_whitelist": [
+      "C1234567890",           // Exact channel ID match
+      "^C.*DEV$",              // Channels ending with "DEV"  
+      ".*test.*",              // Channels containing "test"
+      "^(C123|C456|C789).*"    // Multiple channel prefixes
+    ]
+  }
+}
+```
+
+#### Behavior
+
+- **Empty whitelist**: All channels are allowed (default behavior)
+- **Configured whitelist**: Only matching channels can use bot commands and receive responses to app mentions
+- **Non-matching channels**: All interactions (slash commands, app mentions, thread replies) are silently ignored (no response sent)
+- **Debug logging**: When enabled, shows which channels are allowed/rejected
+
+#### Examples
+
+**Development Environment Setup:**
+```json
+{
+  "channel_whitelist": ["^C.*dev$", "^C.*test$", "C1234567890"]
+}
+```
+
+**Production Environment Setup:**
+```json
+{
+  "channel_whitelist": ["C0987654321", "^C.*prod$"]
+}
+```
+
+**No Restrictions:**
+```json
+{
+  "channel_whitelist": []
+}
+```
+
+#### Security Considerations
+
+- Channel whitelist can only be configured through the config file (not environment variables)
+- All bot interactions (slash commands, app mentions, thread replies, reactions) are subject to whitelist restrictions
+- Rejected interactions are silently ignored to avoid revealing bot presence
+- Regex patterns are compiled at startup and validated for correctness
+- Debug logs show whitelist decisions for troubleshooting
 
 ### Slack App Setup
 1. Create new Slack App at https://api.slack.com/apps

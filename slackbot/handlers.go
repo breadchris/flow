@@ -396,16 +396,24 @@ func (b *SlackBot) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 // handleAppMentionEvent processes app mention events
 func (b *SlackBot) handleAppMentionEvent(ev *slackevents.AppMentionEvent) {
-	// Note: App mentions are allowed from ANY channel to enable Claude sessions everywhere
-	// Channel whitelist restrictions are preserved for slash commands and thread replies
-	if b.config.Debug {
-		slog.Debug("Processing app mention from any channel",
-			"channel_id", ev.Channel,
-			"user_id", ev.User,
-			"channel_whitelisted", b.isChannelAllowed(ev.Channel))
+	// Check if channel is allowed by whitelist
+	if !b.isChannelAllowed(ev.Channel) {
+		if b.config.Debug {
+			slog.Debug("App mention rejected - channel not in whitelist",
+				"channel_id", ev.Channel,
+				"user_id", ev.User)
+		}
+		// Silently ignore - no response to avoid revealing bot presence
+		return
 	}
 
-	// For now, treat app mentions like /flow commands
+	if b.config.Debug {
+		slog.Debug("Processing app mention",
+			"channel_id", ev.Channel,
+			"user_id", ev.User)
+	}
+
+	// Process app mentions similar to /flow commands
 	// Remove the bot mention from the text
 	text := strings.TrimSpace(ev.Text)
 
@@ -432,24 +440,52 @@ func (b *SlackBot) handleAppMentionEvent(ev *slackevents.AppMentionEvent) {
 		slog.Debug("Handling app mention",
 			"user_id", ev.User,
 			"channel_id", ev.Channel,
-			"text", text)
+			"text", text,
+			"in_thread", ev.ThreadTimeStamp != "",
+			"thread_ts", ev.ThreadTimeStamp)
 	}
 
-	// Create a new thread for the Claude session
+	// Handle app mention - reply in existing thread or create new one
 	go func() {
-		_, threadTS, err := b.client.PostMessage(ev.Channel,
-			slack.MsgOptionText("🤖 Starting Claude session...", false),
-			slack.MsgOptionAsUser(true),
-		)
-		if err != nil {
-			slog.Error("Failed to create thread for app mention", "error", err)
-			return
+		var threadTS string
+		var err error
+
+		if ev.ThreadTimeStamp != "" {
+			// We're in an existing thread - reply there
+			threadTS = ev.ThreadTimeStamp
+			if b.config.Debug {
+				slog.Debug("App mention in existing thread, replying in thread",
+					"thread_ts", threadTS,
+					"channel_id", ev.Channel)
+			}
+			_, _, err = b.client.PostMessage(ev.Channel,
+				slack.MsgOptionText("🤖 Starting Claude session...", false),
+				slack.MsgOptionTS(ev.ThreadTimeStamp),
+			)
+			if err != nil {
+				slog.Error("Failed to reply in thread for app mention", "error", err, "thread_ts", threadTS)
+				return
+			}
+		} else {
+			// Create new thread
+			if b.config.Debug {
+				slog.Debug("App mention in channel, creating new thread",
+					"channel_id", ev.Channel)
+			}
+			_, threadTS, err = b.client.PostMessage(ev.Channel,
+				slack.MsgOptionText("🤖 Starting Claude session...", false),
+				slack.MsgOptionAsUser(true),
+			)
+			if err != nil {
+				slog.Error("Failed to create thread for app mention", "error", err)
+				return
+			}
 		}
 
 		// Create Claude session
 		session, err := b.createClaudeSession(ev.User, ev.Channel, threadTS)
 		if err != nil {
-			slog.Error("Failed to create Claude session for app mention", "error", err)
+			slog.Error("Failed to create Claude session for app mention", "error", err, "thread_ts", threadTS)
 			b.updateMessage(ev.Channel, threadTS, "❌ Failed to start Claude session. Please try again.")
 			return
 		}

@@ -96,9 +96,6 @@ func applyEnvOverrides(config *AppConfig) {
 	if workingDir := os.Getenv("SLACKBOT_WORKING_DIRECTORY"); workingDir != "" {
 		config.SlackBot.WorkingDirectory = workingDir
 	}
-	if channelWhitelist := os.Getenv("SLACKBOT_CHANNEL_WHITELIST"); channelWhitelist != "" {
-		config.SlackBot.ChannelWhitelist = parseCommaSeparated(channelWhitelist)
-	}
 
 	// Claude environment variables
 	if debugStr := os.Getenv("CLAUDE_DEBUG"); debugStr != "" {
