@@ -2038,6 +2038,11 @@ func (b *SlackBot) preprocessMessage(text, userID string) (string, error) {
 	processed = regexp.MustCompile(`[ \t]+`).ReplaceAllString(processed, " ")
 	processed = strings.TrimSpace(processed)
 
+	// Check if the processed message is empty
+	if processed == "" {
+		return "", fmt.Errorf("empty message after processing")
+	}
+
 	// Validate message length
 	if len(processed) > 4000 {
 		return "", fmt.Errorf("message too long (%d characters, max 4000)", len(processed))
@@ -2077,8 +2082,10 @@ func (b *SlackBot) expandUserMentions(text string) string {
 			}
 
 			// Try to get user info from Slack API
-			if user, err := b.client.GetUserInfo(userID); err == nil {
-				return "@" + user.Name
+			if b.client != nil {
+				if user, err := b.client.GetUserInfo(userID); err == nil {
+					return "@" + user.Name
+				}
 			}
 
 			// Fallback to generic mention
@@ -2104,10 +2111,12 @@ func (b *SlackBot) expandChannelMentions(text string) string {
 			}
 
 			// Try to get channel info from Slack API
-			if channel, err := b.client.GetConversationInfo(&slack.GetConversationInfoInput{
-				ChannelID: channelID,
-			}); err == nil {
-				return "#" + channel.Name
+			if b.client != nil {
+				if channel, err := b.client.GetConversationInfo(&slack.GetConversationInfoInput{
+					ChannelID: channelID,
+				}); err == nil {
+					return "#" + channel.Name
+				}
 			}
 
 			// Fallback to generic mention
