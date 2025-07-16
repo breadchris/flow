@@ -3,6 +3,7 @@ package code
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +44,10 @@ func New(d deps.Deps) *http.ServeMux {
 
 	m.HandleFunc("/module/", func(w http.ResponseWriter, r *http.Request) {
 		handleServeModule(w, r)
+	})
+
+	m.HandleFunc("/page/", func(w http.ResponseWriter, r *http.Request) {
+		handlePageComponent(d)(w, r)
 	})
 
 	return m
@@ -188,7 +193,7 @@ func handleRenderComponent(d deps.Deps) func(w http.ResponseWriter, r *http.Requ
 			JSX:             api.JSXAutomatic,
 			JSXImportSource: "react",
 			LogLevel:        api.LogLevelSilent,
-			External:        []string{"react", "react-dom", "react-player", "supabase-kv"},
+			External:        []string{"react", "react-dom", "react-dom/client", "supabase-kv", "react/jsx-runtime", "@connectrpc/connect", "@connectrpc/connect-web"},
 			TsconfigRaw: `{
 			"compilerOptions": {
 				"jsx": "react-jsx",
@@ -305,12 +310,13 @@ func handleServeModule(w http.ResponseWriter, r *http.Request) {
 		Format:          api.FormatESModule,
 		Bundle:          true,
 		Write:           false,
+		Sourcemap:       api.SourceMapInline,
 		TreeShaking:     api.TreeShakingTrue,
 		Target:          api.ESNext,
 		JSX:             api.JSXAutomatic,
 		JSXImportSource: "react",
 		LogLevel:        api.LogLevelSilent,
-		External:        []string{"react", "react-dom", "react-dom/client", "react/jsx-runtime", "supabase-kv"},
+		External:        []string{"react", "react-dom", "react-dom/client", "supabase-kv", "react/jsx-runtime", "@connectrpc/connect", "@connectrpc/connect-web"},
 		TsconfigRaw: `{
 			"compilerOptions": {
 				"jsx": "react-jsx",
@@ -333,18 +339,17 @@ func handleServeModule(w http.ResponseWriter, r *http.Request) {
 
 	// Check for build errors
 	if len(result.Errors) > 0 {
-		errorMessages := make([]string, len(result.Errors))
-		for i, err := range result.Errors {
-			errorMessages[i] = fmt.Sprintf("%s:%d:%d: %s", err.Location.File, err.Location.Line, err.Location.Column, err.Text)
-		}
+		//errorMessages := make([]string, len(result.Errors))
+		//for i, er := range result.Errors {
+		//	errorMessages[i] = fmt.Sprintf("%s:%d:%d: %s", er.Location.File, er.Location.Line, er.Location.Column, er.Text)
+		//}
 
 		errorResponse := map[string]interface{}{
 			"error":   "Build failed",
-			"details": errorMessages,
+			"details": fmt.Sprintf("%+v", result.Errors),
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(errorResponse)
 		return
 	}
@@ -361,4 +366,138 @@ func handleServeModule(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
 	w.Header().Set("Cache-Control", "no-cache") // Prevent caching during development
 	w.Write([]byte(compiledJS))
+}
+
+// handlePageComponent builds and renders a React component as CommonJS in a complete HTML page
+func handlePageComponent(d deps.Deps) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract path from URL
+		componentPath := strings.TrimPrefix(r.URL.Path, "/page/")
+		if componentPath == "" {
+			http.Error(w, "Component path is required", http.StatusBadRequest)
+			return
+		}
+
+		// Get component name from query parameter (optional)
+		componentName := r.URL.Query().Get("component")
+		if componentName == "" {
+			componentName = "App" // Default to App component
+		}
+
+		// Validate and sanitize the path
+		cleanPath := filepath.Clean(componentPath)
+		if strings.Contains(cleanPath, "..") {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
+		// Build source path
+		srcPath := filepath.Join("./", cleanPath)
+
+		// Check if source file exists
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			http.Error(w, "Source file not found", http.StatusNotFound)
+			return
+		}
+
+		// Read the source code to build
+		sourceCode, err := os.ReadFile(srcPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to read source file: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		var loader api.Loader
+		switch filepath.Ext(srcPath) {
+		case ".js":
+			loader = api.LoaderJS
+		case ".jsx":
+			loader = api.LoaderJSX
+		case ".ts":
+			loader = api.LoaderTS
+		case ".tsx":
+			loader = api.LoaderTSX
+		default:
+			loader = api.LoaderTSX // Default to TSX
+		}
+
+		// Build with esbuild to get the compiled JavaScript as CommonJS bundle
+		result := api.Build(api.BuildOptions{
+			Stdin: &api.StdinOptions{
+				Contents:   string(sourceCode),
+				ResolveDir: filepath.Dir(srcPath),
+				Sourcefile: filepath.Base(srcPath),
+				Loader:     loader,
+			},
+			Loader: map[string]api.Loader{
+				".js":  api.LoaderJS,
+				".jsx": api.LoaderJSX,
+				".ts":  api.LoaderTS,
+				".tsx": api.LoaderTSX,
+				".css": api.LoaderCSS,
+			},
+			Format:          api.FormatCommonJS, // Use CommonJS format
+			Bundle:          true,
+			Write:           false,
+			TreeShaking:     api.TreeShakingTrue,
+			Target:          api.ES2020, // More compatible target
+			JSX:             api.JSXAutomatic,
+			JSXImportSource: "react",
+			LogLevel:        api.LogLevelSilent,
+			// Don't externalize React - bundle everything
+			TsconfigRaw: `{
+			"compilerOptions": {
+				"jsx": "react-jsx",
+				"allowSyntheticDefaultImports": true,
+				"esModuleInterop": true,
+				"moduleResolution": "node",
+				"target": "ES2020",
+				"lib": ["ES2020", "DOM", "DOM.Iterable"],
+				"allowJs": true,
+				"skipLibCheck": true,
+				"strict": false,
+				"forceConsistentCasingInFileNames": true,
+				"noEmit": true,
+				"incremental": true,
+				"resolveJsonModule": true,
+				"isolatedModules": true
+			}
+		}`,
+		})
+
+		// Check for build errors
+		if len(result.Errors) > 0 {
+			errorMessages := make([]string, len(result.Errors))
+			for i, err := range result.Errors {
+				errorMessages[i] = fmt.Sprintf("%s:%d:%d: %s", err.Location.File, err.Location.Line, err.Location.Column, err.Text)
+			}
+
+			slog.Error("Build failed", "path", componentPath, "errors", errorMessages)
+
+			// Use the BuildErrorPage helper
+			w.WriteHeader(http.StatusBadRequest)
+			BuildErrorPage(componentPath, errorMessages).RenderPage(w, r)
+			return
+		}
+
+		// Verify build succeeded
+		if len(result.OutputFiles) == 0 {
+			http.Error(w, "No output generated from build", http.StatusInternalServerError)
+			return
+		}
+
+		// Get the compiled JavaScript
+		compiledJS := string(result.OutputFiles[0].Contents)
+
+		// Generate the HTML page using CommonJS format
+		page := CommonJSComponentPage(d.Config, componentName, compiledJS)
+
+		// Render the page
+		page.RenderPage(w, r)
+	}
 }

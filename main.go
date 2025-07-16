@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breadchris/flow/claude"
 	"github.com/breadchris/flow/code"
 	"github.com/breadchris/flow/config"
 	"github.com/breadchris/flow/deps"

@@ -5,6 +5,7 @@ import {
   ClaudeError,
   ClaudeHookOptions,
 } from '../types';
+import { createClaudeSessionClient, ClaudeSessionServiceClient } from '../services/claudeSessionClient';
 
 export const useClaudeSession = (
   options: ClaudeHookOptions = {}
@@ -17,9 +18,9 @@ export const useClaudeSession = (
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ClaudeError | null>(null);
 
-  const getApiUrl = useCallback((endpoint: string) => {
-    const baseUrl = apiBaseUrl || window.location.origin;
-    return `${baseUrl}/coderunner/claude${endpoint}`;
+  // Create Connect client instance
+  const client = useCallback(() => {
+    return createClaudeSessionClient(apiBaseUrl);
   }, [apiBaseUrl]);
 
   const handleApiError = useCallback((error: any, type: ClaudeError['type'] = 'unknown') => {
@@ -43,31 +44,14 @@ export const useClaudeSession = (
     clearError();
 
     try {
-      const response = await fetch(getApiUrl('/sessions'), {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          // Redirect to login for authentication errors
-          window.location.href = '/login';
-          return;
-        }
-        throw new Error(`Failed to fetch sessions: ${response.statusText}`);
-      }
-
-      const sessionsData = await response.json();
-      setSessions(Array.isArray(sessionsData) ? sessionsData : []);
+      const response = await client().getSessions({});
+      setSessions(response.sessions);
     } catch (err) {
       handleApiError(err, 'session');
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl, handleApiError, clearError]);
+  }, [client, handleApiError, clearError]);
 
   const createSession = useCallback(async (): Promise<string> => {
     setLoading(true);
@@ -92,27 +76,8 @@ export const useClaudeSession = (
     clearError();
 
     try {
-      const response = await fetch(getApiUrl(`/sessions/${sessionId}`), {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          window.location.href = '/login';
-          return;
-        }
-        if (response.status === 404) {
-          throw new Error('Session not found');
-        }
-        throw new Error(`Failed to resume session: ${response.statusText}`);
-      }
-
-      const sessionData = await response.json();
-      setCurrentSession(sessionData);
+      const response = await client().getSession({ session_id: sessionId });
+      setCurrentSession(response.session);
       setCurrentSessionId(sessionId);
     } catch (err) {
       handleApiError(err, 'session');
@@ -120,32 +85,15 @@ export const useClaudeSession = (
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl, handleApiError, clearError]);
+  }, [client, handleApiError, clearError]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     setLoading(true);
     clearError();
 
     try {
-      const response = await fetch(getApiUrl(`/sessions/${sessionId}`), {
-        method: 'DELETE',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          window.location.href = '/login';
-          return;
-        }
-        if (response.status === 404) {
-          throw new Error('Session not found');
-        }
-        throw new Error(`Failed to delete session: ${response.statusText}`);
-      }
-
+      await client().deleteSession({ session_id: sessionId });
+      
       // Remove from local state
       setSessions(prev => prev.filter(s => s.session_id !== sessionId));
       
@@ -160,42 +108,25 @@ export const useClaudeSession = (
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl, handleApiError, clearError, currentSessionId]);
+  }, [client, handleApiError, clearError, currentSessionId]);
 
   const updateSessionTitle = useCallback(async (sessionId: string, title: string) => {
     setLoading(true);
     clearError();
 
     try {
-      const response = await fetch(getApiUrl(`/sessions/${sessionId}`), {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ title }),
+      const response = await client().updateSession({ 
+        session_id: sessionId, 
+        title 
       });
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          window.location.href = '/login';
-          return;
-        }
-        if (response.status === 404) {
-          throw new Error('Session not found');
-        }
-        throw new Error(`Failed to update session: ${response.statusText}`);
-      }
-
-      const updatedSession = await response.json();
       
       // Update local state
       setSessions(prev => 
-        prev.map(s => s.session_id === sessionId ? updatedSession : s)
+        prev.map(s => s.session_id === sessionId ? response.session : s)
       );
       
       if (currentSessionId === sessionId) {
-        setCurrentSession(updatedSession);
+        setCurrentSession(response.session);
       }
     } catch (err) {
       handleApiError(err, 'session');
@@ -203,7 +134,7 @@ export const useClaudeSession = (
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl, handleApiError, clearError, currentSessionId]);
+  }, [client, handleApiError, clearError, currentSessionId]);
 
   const exportSession = useCallback(async (sessionId: string): Promise<string> => {
     clearError();

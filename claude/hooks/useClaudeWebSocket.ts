@@ -6,6 +6,7 @@ import {
   UseClaudeWebSocketReturn,
   ClaudeHookOptions,
 } from '../types';
+import { createClaudeSessionClient } from '../services/claudeSessionClient';
 
 export const useClaudeWebSocket = (
   options: ClaudeHookOptions = {}
@@ -136,17 +137,15 @@ export const useClaudeWebSocket = (
       error: undefined,
     }));
 
-    // First, check if we need authentication by making a test request
+    // First, check if we need authentication using Connect client
     const wsUrl = getWebSocketUrl();
+    const client = createClaudeSessionClient(apiBaseUrl);
     
     // Test authentication before creating WebSocket
-    fetch(wsUrl.replace('ws://', 'http://').replace('wss://', 'https://'), {
-      method: 'HEAD',
-      credentials: 'include'
-    }).then(response => {
-      if (response.status === 401) {
+    client.checkAuth({}).then(authResponse => {
+      if (!authResponse.authenticated) {
         // Redirect to login if not authenticated
-        window.location.href = '/login';
+        window.location.href = authResponse.redirect_url || '/login';
         return;
       }
       

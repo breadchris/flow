@@ -14,7 +14,9 @@ func ReactImportMap(c config.AppConfig) *Node {
             "react-dom": "https://esm.sh/react-dom@18",
             "react-dom/client": "https://esm.sh/react-dom@18/client",
             "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime",
-			"supabase-kv": "`+c.ExternalURL+`/code/module/flow/supabase-kv.ts"
+			"supabase-kv": "`+c.ExternalURL+`/code/module/flow/supabase-kv.ts",
+			"@connectrpc/connect-web": "https://esm.sh/@connectrpc/connect-web",
+			"@connectrpc/connect": "https://esm.sh/@connectrpc/connect"
         }
     }
     `))
@@ -124,6 +126,95 @@ func ComponentLoader(componentPath, componentName string, useModuleEndpoint bool
 	return Script(Type("module"), Raw(jsCode))
 }
 
+// CommonJSLoader creates a script that loads and renders a bundled React component using CommonJS
+func CommonJSLoader(componentName, compiledJS string) *Node {
+	jsCode := `
+        try {
+            // Create a CommonJS environment for the browser
+            (function() {
+                // Set up module system shim
+                const module = { exports: {} };
+                const exports = module.exports;
+                const require = function(id) {
+                    // For CommonJS bundles, we need to handle built-in requires
+                    throw new Error('require() not implemented for: ' + id);
+                };
+                
+                // Execute the CommonJS bundle
+                ` + compiledJS + `
+                
+                // Get the exported component
+                const componentModule = module.exports;
+                let ComponentToRender;
+                
+                // First try the specified component name
+                if (componentModule.` + componentName + `) {
+                    console.log('Rendering component:', componentModule.` + componentName + `);
+                    ComponentToRender = componentModule.` + componentName + `;
+                }
+                // Then try default export
+                else if (componentModule.default) {
+                    console.log('Rendering default component:', componentModule.default);
+                    ComponentToRender = componentModule.default;
+                }
+                // If it's a function itself, use it directly
+                else if (typeof componentModule === 'function') {
+                    console.log('Rendering module as component:', componentModule);
+                    ComponentToRender = componentModule;
+                }
+                else {
+                    throw new Error('No component found. Make sure to export a component named "` + componentName + `" or a default export. Found: ' + Object.keys(componentModule).join(', '));
+                }
+                
+                // We need React and ReactDOM - try to get them from the bundle or CDN
+                if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
+                    // Load React from CDN if not bundled
+                    const reactScript = document.createElement('script');
+                    reactScript.src = 'https://unpkg.com/react@18/umd/react.development.js';
+                    const reactDOMScript = document.createElement('script');
+                    reactDOMScript.src = 'https://unpkg.com/react-dom@18/umd/react-dom.development.js';
+                    
+                    // Load React first, then ReactDOM, then render
+                    reactScript.onload = function() {
+                        document.head.appendChild(reactDOMScript);
+                        reactDOMScript.onload = function() {
+                            renderComponent();
+                        };
+                    };
+                    document.head.appendChild(reactScript);
+                } else {
+                    renderComponent();
+                }
+                
+                function renderComponent() {
+                    try {
+                        const root = ReactDOM.createRoot(document.getElementById('root'));
+                        root.render(React.createElement(ComponentToRender));
+                    } catch (renderError) {
+                        console.error('Render Error:', renderError);
+                        document.getElementById('root').innerHTML = 
+                            '<div class="error">' +
+                            '<h3>Render Error:</h3>' +
+                            '<pre>' + renderError.message + '</pre>' +
+                            '<pre>' + (renderError.stack || '') + '</pre>' +
+                            '</div>';
+                    }
+                }
+            })();
+            
+        } catch (error) {
+            console.error('Runtime Error:', error);
+            document.getElementById('root').innerHTML = 
+                '<div class="error">' +
+                '<h3>Runtime Error:</h3>' +
+                '<pre>' + error.message + '</pre>' +
+                '<pre>' + (error.stack || '') + '</pre>' +
+                '</div>';
+        }`
+
+	return Script(Raw(jsCode))
+}
+
 // BuildErrorPage creates a complete error page for build failures
 func BuildErrorPage(componentPath string, errorMessages []string) *Node {
 	return ComponentPageLayout("Build Error",
@@ -153,6 +244,24 @@ func ReactComponentPage(c config.AppConfig, componentName string, additionalHead
 		Head(Ch(headNodes)),
 		Body(
 			Div(Id("root")),
+		),
+	)
+}
+
+// CommonJSComponentPage creates a page that renders a React component using CommonJS/IIFE bundle
+func CommonJSComponentPage(c config.AppConfig, componentName, compiledJS string) *Node {
+	return Html(
+		Head(
+			Meta(Charset("UTF-8")),
+			Meta(Name("viewport"), Content("width=device-width, initial-scale=1.0")),
+			Title(T("React Component - "+componentName)),
+			Link(Rel("stylesheet"), Type("text/css"), Href("https://cdn.jsdelivr.net/npm/daisyui@5")),
+			Script(Src("https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4")),
+			ComponentRuntimeStyles(),
+		),
+		Body(
+			Div(Id("root")),
+			CommonJSLoader(componentName, compiledJS),
 		),
 	)
 }

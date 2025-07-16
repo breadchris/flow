@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package flow.claude;
+
+import "google/protobuf/timestamp.proto";
+
+// ClaudeSessionService provides session management for Claude interactions
+service ClaudeSessionService {
+  // GetSessions retrieves all sessions for the current user
+  rpc GetSessions(GetSessionsRequest) returns (GetSessionsResponse);
+  
+  // GetSession retrieves a specific session by ID
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  
+  // DeleteSession removes a session and all its data
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+  
+  // UpdateSession updates session metadata (title, etc.)
+  rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
+  
+  // CheckAuth validates user authentication
+  rpc CheckAuth(CheckAuthRequest) returns (CheckAuthResponse);
+}
+
+// ClaudeMessage represents a message in the conversation
+message ClaudeMessage {
+  string type = 1;
+  optional string subtype = 2;
+  string message = 3; // JSON-encoded message content
+  optional string session_id = 4;
+  optional string parent_tool_use_id = 5;
+  optional string result = 6;
+  optional bool is_error = 7;
+  optional google.protobuf.Timestamp timestamp = 8;
+}
+
+// ClaudeSession represents a complete Claude session
+message ClaudeSession {
+  string id = 1;
+  string session_id = 2;
+  string title = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  repeated ClaudeMessage messages = 6;
+  string user_id = 7;
+  map<string, string> metadata = 8;
+}
+
+// GetSessionsRequest - request to get all sessions
+message GetSessionsRequest {
+  // No fields needed - authentication handled by middleware
+}
+
+// GetSessionsResponse - response with all user sessions
+message GetSessionsResponse {
+  repeated ClaudeSession sessions = 1;
+}
+
+// GetSessionRequest - request to get a specific session
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+// GetSessionResponse - response with session data
+message GetSessionResponse {
+  ClaudeSession session = 1;
+}
+
+// DeleteSessionRequest - request to delete a session
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+// DeleteSessionResponse - confirmation of deletion
+message DeleteSessionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// UpdateSessionRequest - request to update session metadata
+message UpdateSessionRequest {
+  string session_id = 1;
+  optional string title = 2;
+  map<string, string> metadata = 3;
+}
+
+// UpdateSessionResponse - response with updated session
+message UpdateSessionResponse {
+  ClaudeSession session = 1;
+}
+
+// CheckAuthRequest - request to check authentication
+message CheckAuthRequest {
+  // No fields needed - authentication handled by middleware
+}
+
+// CheckAuthResponse - authentication status response
+message CheckAuthResponse {
+  bool authenticated = 1;
+  optional string user_id = 2;
+  optional string redirect_url = 3; // URL to redirect to if not authenticated
+}

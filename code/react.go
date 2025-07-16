@@ -2,7 +2,30 @@ package code
 
 import (
 	. "github.com/breadchris/share/html"
+	"net/http"
 )
+
+// ServeReactApp serves a React application with the standard layout and dependencies
+// This provides a reusable pattern for hosting React apps with esbuild compilation
+func ServeReactApp(w http.ResponseWriter, r *http.Request, componentPath, componentName string) {
+	DefaultLayout(
+		Script(Type("importmap"), Raw(`
+	   {
+	       "imports": {
+	           "react": "https://esm.sh/react@18",
+	           "react-dom": "https://esm.sh/react-dom@18",
+	           "react-dom/client": "https://esm.sh/react-dom@18/client",
+	           "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime",
+               "@connectrpc/connect-web": "https://esm.sh/@connectrpc/connect-web",
+               "@connectrpc/connect": "https://esm.sh/@connectrpc/connect"
+	       }
+	   }
+`)),
+		Script(Src("https://cdn.tailwindcss.com")),
+		Div(Id("root")),
+		LoadModule(componentPath, componentName),
+	).RenderPage(w, r)
+}
 
 // LoadModule creates a script node that loads and renders a React component module
 // componentPath: path to the component file (e.g., "claudemd/ClaudeDocApp.tsx")
