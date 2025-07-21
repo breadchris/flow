@@ -46,7 +46,7 @@ export interface WSMessage {
 }
 
 export interface ClaudeWebSocketMessage {
-  type: 'start' | 'resume' | 'prompt' | 'stop' | 'message' | 'error';
+  type: 'start' | 'resume' | 'prompt' | 'stop' | 'message' | 'error' | 'start_git' | 'git_diff' | 'git_commit' | 'git_status';
   payload: any;
 }
 
@@ -94,10 +94,12 @@ export interface MessageDisplayProps {
 export interface SessionBrowserProps {
   sessions: ClaudeSession[];
   currentSessionId: string | null;
+  selectedSessionId?: string | null;
   loading: boolean;
   darkMode: boolean;
   isMobile?: boolean;
   onSelectSession: (sessionId: string) => void;
+  onResumeSession: (sessionId: string) => void;
   onNewSession: () => void;
   onDeleteSession?: (sessionId: string) => void;
   onExportSession?: (sessionId: string) => void;
@@ -175,8 +177,106 @@ export interface UseClaudeMessagesReturn {
   exportMessages: (format: 'json' | 'text' | 'markdown') => string;
 }
 
-export type MessageType = 'system' | 'assistant' | 'result' | 'error' | 'user';
+// Git-related types
+export interface GitSessionInfo {
+  repository_path: string;
+  worktree_path: string;
+  branch_name: string;
+  base_branch: string;
+  commit_hash?: string;
+  has_changes: boolean;
+}
+
+export interface GitCommitInfo {
+  hash: string;
+  message: string;
+  author: string;
+  email: string;
+  timestamp: string;
+}
+
+export interface GitRepositoryStatus {
+  current_branch: string;
+  commit_hash: string;
+  is_clean: boolean;
+  modified_files: string[];
+  added_files: string[];
+  deleted_files: string[];
+}
+
+export interface GitStartData {
+  thread_ts?: string;
+  channel_id?: string;
+  repository_path: string;
+  base_branch?: string;
+  config_id?: string;
+}
+
+export interface GitCommitData {
+  message: string;
+}
+
+export interface GitSessionResponse {
+  session_id: string;
+  session_info: any;
+  git_session_info: GitSessionInfo;
+  status: string;
+}
+
+export interface GitDiffResponse {
+  session_id: string;
+  diff: string;
+}
+
+export interface GitCommitResponse {
+  session_id: string;
+  commit_hash: string;
+  message: string;
+  status: string;
+}
+
+export interface GitStatusResponse {
+  session_id: string;
+  status: GitRepositoryStatus;
+}
+
+// Enhanced Claude session to include git information
+export interface ClaudeSessionWithGit extends ClaudeSession {
+  git_enabled?: boolean;
+  git_session_info?: GitSessionInfo;
+}
+
+// CLAUDE.md Configuration types
+export interface ClaudeMDConfig {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+  is_default: boolean;
+}
+
+export interface ClaudeMDConfigListResponse {
+  configs: ClaudeMDConfig[];
+  total: number;
+}
+
+export interface ClaudeMDCreateRequest {
+  name: string;
+  description: string;
+  content: string;
+}
+
+export interface ClaudeMDUpdateRequest {
+  name?: string;
+  description?: string;
+  content?: string;
+}
+
+export type MessageType = 'system' | 'assistant' | 'result' | 'error' | 'user' | 'git_diff' | 'git_commit' | 'git_status';
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 export type SessionAction = 'create' | 'resume' | 'delete' | 'export' | 'update';
 export type ThemeMode = 'light' | 'dark' | 'auto';
 export type ExportFormat = 'json' | 'text' | 'markdown' | 'html';
+export type GitOperation = 'diff' | 'commit' | 'status' | 'cleanup';

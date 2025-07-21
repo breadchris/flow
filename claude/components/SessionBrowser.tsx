@@ -5,10 +5,12 @@ import { formatRelativeTime, truncateText, generateSessionTitle } from '../utils
 export const SessionBrowser: React.FC<SessionBrowserProps> = ({
   sessions,
   currentSessionId,
+  selectedSessionId,
   loading,
   darkMode,
   isMobile = false,
   onSelectSession,
+  onResumeSession,
   onNewSession,
   onDeleteSession,
   onExportSession,
@@ -64,7 +66,13 @@ export const SessionBrowser: React.FC<SessionBrowserProps> = ({
 
   const handleSessionSelect = (sessionId: string) => {
     onSelectSession(sessionId);
-    // Auto-close sidebar on mobile after selection
+    // Don't auto-close sidebar on mobile to allow resume action
+  };
+
+  const handleResumeSession = (sessionId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    onResumeSession(sessionId);
+    // Auto-close sidebar on mobile after resuming
     if (isMobile && onClose) {
       onClose();
     }
@@ -194,6 +202,7 @@ export const SessionBrowser: React.FC<SessionBrowserProps> = ({
           <div className="divide-y divide-gray-200 dark:divide-gray-700">
             {filteredAndSortedSessions.map((session) => {
               const isActive = session.session_id === currentSessionId;
+              const isSelected = session.session_id === selectedSessionId;
               const messageCount = session.messages.length;
               const preview = getSessionPreview(session);
 
@@ -205,6 +214,8 @@ export const SessionBrowser: React.FC<SessionBrowserProps> = ({
                     ${isMobile ? 'p-3' : 'p-4'}
                     ${isActive 
                       ? `${darkMode ? 'bg-blue-900' : 'bg-blue-50'} border-l-4 border-l-blue-500` 
+                      : isSelected
+                      ? `${darkMode ? 'bg-gray-700' : 'bg-gray-100'} border-l-2 border-l-gray-400`
                       : hoverClass
                     }
                   `}
@@ -266,6 +277,42 @@ export const SessionBrowser: React.FC<SessionBrowserProps> = ({
                   <div className={`text-xs mt-1 font-mono ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
                     {session.session_id.slice(0, 8)}...
                   </div>
+
+                  {/* Resume button - show when selected and not already active */}
+                  {isSelected && !isActive && (
+                    <div className="mt-3">
+                      <button
+                        onClick={(e) => handleResumeSession(session.session_id, e)}
+                        className={`w-full px-3 py-2 rounded text-sm font-medium text-white transition-colors
+                          ${loading 
+                            ? 'bg-gray-500 cursor-not-allowed' 
+                            : 'bg-blue-500 hover:bg-blue-600 active:bg-blue-700'
+                          }
+                        `}
+                        disabled={loading}
+                      >
+                        {loading ? (
+                          <>
+                            <span className="inline-block animate-spin mr-2">🔄</span>
+                            Resuming...
+                          </>
+                        ) : (
+                          'Resume Session'
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Active session indicator */}
+                  {isActive && (
+                    <div className="mt-3">
+                      <div className={`text-xs px-2 py-1 rounded text-center font-medium
+                        ${darkMode ? 'bg-blue-800 text-blue-200' : 'bg-blue-100 text-blue-800'}
+                      `}>
+                        Active Session
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

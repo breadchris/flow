@@ -26,6 +26,37 @@ type Config struct {
 	Tools    []string
 }
 
+// ClaudeMDConfig represents a CLAUDE.md configuration
+type ClaudeMDConfig struct {
+	ID          string    `json:"id" gorm:"primaryKey"`
+	Name        string    `json:"name" gorm:"uniqueIndex;not null"`
+	Description string    `json:"description"`
+	Content     string    `json:"content" gorm:"type:text;not null"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	IsDefault   bool      `json:"is_default" gorm:"default:false"`
+}
+
+// ClaudeMDConfigListResponse represents the response for listing configurations
+type ClaudeMDConfigListResponse struct {
+	Configs []ClaudeMDConfig `json:"configs"`
+	Total   int              `json:"total"`
+}
+
+// ClaudeMDCreateRequest represents the request for creating a configuration
+type ClaudeMDCreateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	Content     string `json:"content" binding:"required"`
+}
+
+// ClaudeMDUpdateRequest represents the request for updating a configuration
+type ClaudeMDUpdateRequest struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	Content     *string `json:"content"`
+}
+
 type Service struct {
 	config   Config
 	sessions map[string]*Process
@@ -34,10 +65,11 @@ type Service struct {
 
 // ClaudeService provides database-integrated Claude session management
 type ClaudeService struct {
-	service *Service // Embedded basic service
-	db      *gorm.DB
-	config  Config
-	debug   bool
+	service    *Service    // Embedded basic service
+	gitService *GitService // Git operations service
+	db         *gorm.DB
+	config     Config
+	debug      bool
 }
 
 // SessionInfo represents session metadata stored in database
@@ -889,12 +921,14 @@ func NewClaudeService(d deps.Deps) *ClaudeService {
 	}
 
 	service := NewService(config)
+	gitService := NewGitService()
 
 	return &ClaudeService{
-		service: service,
-		db:      d.DB,
-		config:  config,
-		debug:   config.Debug,
+		service:    service,
+		gitService: gitService,
+		db:         d.DB,
+		config:     config,
+		debug:      config.Debug,
 	}
 }
 
@@ -905,6 +939,11 @@ func (cs *ClaudeService) GetDB() *gorm.DB {
 
 // CreateSessionWithPersistence creates a new Claude session and persists it to database
 func (cs *ClaudeService) CreateSessionWithPersistence(threadTS, channelID, userID, workingDir string) (*Process, *SessionInfo, error) {
+	return cs.CreateSessionWithPersistenceAndConfig(threadTS, channelID, userID, workingDir, "")
+}
+
+// CreateSessionWithPersistenceAndConfig creates a new Claude session with specified CLAUDE.md configuration
+func (cs *ClaudeService) CreateSessionWithPersistenceAndConfig(threadTS, channelID, userID, workingDir, configID string) (*Process, *SessionInfo, error) {
 	// Create session ID first
 	sessionID := uuid.New().String()
 	
@@ -914,12 +953,12 @@ func (cs *ClaudeService) CreateSessionWithPersistence(threadTS, channelID, userI
 		return nil, nil, fmt.Errorf("failed to create session directory: %w", err)
 	}
 	
-	// Copy CLAUDE.md from ./flow to session directory
-	flowClaudemd := filepath.Join("./flow", "CLAUDE.md")
+	// Create CLAUDE.md in session directory from configuration
 	sessionClaudemd := filepath.Join(sessionDir, "CLAUDE.md")
-	if err := cs.copyFile(flowClaudemd, sessionClaudemd); err != nil {
-		slog.Warn("Failed to copy CLAUDE.md to session directory",
+	if err := cs.createClaudeMDFromConfig(sessionClaudemd, configID); err != nil {
+		slog.Warn("Failed to create CLAUDE.md in session directory",
 			"session_id", sessionID,
+			"config_id", configID,
 			"error", err)
 		// Continue without CLAUDE.md - not critical
 	}
@@ -1385,4 +1424,550 @@ func (cs *ClaudeService) StopSession(sessionID string) {
 			"session_id", sessionID,
 			"error", err)
 	}
+}
+
+// CreateGitSessionWithPersistence creates a new Claude session with git repository integration
+func (cs *ClaudeService) CreateGitSessionWithPersistence(threadTS, channelID, userID, repoPath, baseBranch string) (*Process, *SessionInfo, *GitSessionInfo, error) {
+	return cs.CreateGitSessionWithPersistenceAndConfig(threadTS, channelID, userID, repoPath, baseBranch, "")
+}
+
+func (cs *ClaudeService) CreateGitSessionWithPersistenceAndConfig(threadTS, channelID, userID, repoPath, baseBranch, configID string) (*Process, *SessionInfo, *GitSessionInfo, error) {
+	// Validate repository path
+	if repoPath == "" {
+		return nil, nil, nil, fmt.Errorf("repository path is required")
+	}
+
+	if err := cs.gitService.ValidateRepository(repoPath); err != nil {
+		return nil, nil, nil, fmt.Errorf("invalid repository: %w", err)
+	}
+
+	// Use default branch if not specified
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	// Create session ID first
+	sessionID := uuid.New().String()
+	
+	// Generate unique branch name for this session
+	branchName := fmt.Sprintf("claude-session-%s", sessionID[:8])
+	
+	// Create git worktree
+	worktreePath, err := cs.gitService.CreateWorktree(repoPath, branchName, baseBranch)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create git worktree: %w", err)
+	}
+
+	// Create CLAUDE.md in worktree directory from configuration
+	sessionClaudemd := filepath.Join(worktreePath, "CLAUDE.md")
+	if err := cs.createClaudeMDFromConfig(sessionClaudemd, configID); err != nil {
+		slog.Warn("Failed to create CLAUDE.md in worktree directory",
+			"session_id", sessionID,
+			"config_id", configID,
+			"error", err)
+		// Continue without CLAUDE.md - not critical
+	}
+	
+	// Prepare directories - use worktree as primary, include upload directory for this thread
+	uploadDir := filepath.Join("./data", "slack-uploads", threadTS)
+	dirs := []string{worktreePath, uploadDir}
+	
+	// Create upload directory if it doesn't exist
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		slog.Warn("Failed to create upload directory, Claude won't have access to uploaded files",
+			"upload_dir", uploadDir,
+			"error", err,
+			"thread_ts", threadTS)
+		// Continue without upload directory, but keep worktree as primary
+		dirs = []string{worktreePath}
+	}
+
+	// Create the Claude process using the underlying service with multiple directories
+	process, err := cs.service.CreateSessionWithMultipleDirs(dirs)
+	if err != nil {
+		// Clean up worktree if process creation fails
+		cs.gitService.RemoveWorktree(repoPath, worktreePath)
+		return nil, nil, nil, fmt.Errorf("failed to create Claude process: %w", err)
+	}
+
+	// Create session info
+	sessionInfo := &SessionInfo{
+		SessionID:     sessionID,
+		ThreadTS:      threadTS,
+		UserID:        userID,
+		ChannelID:     channelID,
+		WorkingDir:    worktreePath,
+		LastActivity:  time.Now(),
+		Active:        true,
+		ProcessExists: true,
+	}
+
+	// Create git session info
+	gitSessionInfo := &GitSessionInfo{
+		RepositoryPath: repoPath,
+		WorktreePath:   worktreePath,
+		BranchName:     branchName,
+		BaseBranch:     baseBranch,
+		HasChanges:     false,
+	}
+
+	// Persist session to database
+	dbSession := &models.ClaudeSession{
+		Model: models.Model{
+			ID:        uuid.NewString(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		SessionID: sessionID,
+		UserID:    userID,
+		Title:     fmt.Sprintf("Git Session %s", threadTS),
+		Messages:  models.JSONField[interface{}]{Data: []interface{}{}},
+		Metadata: models.MakeJSONField(map[string]interface{}{
+			"thread_ts":       threadTS,
+			"channel_id":      channelID,
+			"working_dir":     worktreePath,
+			"session_dir":     worktreePath,
+			"upload_dir":      uploadDir,
+			"created_via":     "git_session",
+			"last_activity":   time.Now().Format(time.RFC3339),
+			"active":          true,
+			"git_enabled":     true,
+			"repository_path": repoPath,
+			"worktree_path":   worktreePath,
+			"branch_name":     branchName,
+			"base_branch":     baseBranch,
+		}),
+	}
+
+	if err := cs.db.Create(dbSession).Error; err != nil {
+		// If database persistence fails, we still return the process but log the error
+		slog.Error("Failed to persist Claude git session to database",
+			"session_id", process.sessionID,
+			"thread_ts", threadTS,
+			"error", err)
+	} else {
+		if cs.debug {
+			slog.Debug("Claude git session persisted to database",
+				"session_id", process.sessionID,
+				"thread_ts", threadTS,
+				"user_id", userID,
+				"worktree_path", worktreePath)
+		}
+	}
+
+	return process, sessionInfo, gitSessionInfo, nil
+}
+
+// GetSessionDiff returns the git diff for a Claude session
+func (cs *ClaudeService) GetSessionDiff(sessionID, userID string) (string, error) {
+	// Get session from database
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&dbSession).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return "", fmt.Errorf("session not found")
+		}
+		return "", fmt.Errorf("failed to query session: %w", err)
+	}
+
+	// Check if session has git enabled
+	if dbSession.Metadata == nil {
+		return "", fmt.Errorf("session has no metadata")
+	}
+
+	metadata := dbSession.Metadata.Data
+	gitEnabled, exists := metadata["git_enabled"]
+	if !exists || !gitEnabled.(bool) {
+		return "", fmt.Errorf("session is not git-enabled")
+	}
+
+	// Get worktree path
+	worktreePath, exists := metadata["worktree_path"]
+	if !exists {
+		return "", fmt.Errorf("session has no worktree path")
+	}
+
+	worktreePathStr, ok := worktreePath.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid worktree path in session metadata")
+	}
+
+	// Get diff from base branch
+	baseBranch, exists := metadata["base_branch"]
+	if !exists {
+		baseBranch = "main"
+	}
+
+	baseBranchStr, ok := baseBranch.(string)
+	if !ok {
+		baseBranchStr = "main"
+	}
+
+	return cs.gitService.GetDiffFromBaseBranch(worktreePathStr, baseBranchStr)
+}
+
+// CommitSessionChanges commits changes in a Claude session's git worktree
+func (cs *ClaudeService) CommitSessionChanges(sessionID, userID, commitMessage string) (string, error) {
+	// Get session from database
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&dbSession).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return "", fmt.Errorf("session not found")
+		}
+		return "", fmt.Errorf("failed to query session: %w", err)
+	}
+
+	// Check if session has git enabled
+	if dbSession.Metadata == nil {
+		return "", fmt.Errorf("session has no metadata")
+	}
+
+	metadata := dbSession.Metadata.Data
+	gitEnabled, exists := metadata["git_enabled"]
+	if !exists || !gitEnabled.(bool) {
+		return "", fmt.Errorf("session is not git-enabled")
+	}
+
+	// Get worktree path
+	worktreePath, exists := metadata["worktree_path"]
+	if !exists {
+		return "", fmt.Errorf("session has no worktree path")
+	}
+
+	worktreePathStr, ok := worktreePath.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid worktree path in session metadata")
+	}
+
+	// Commit changes
+	commitHash, err := cs.gitService.CommitChanges(worktreePathStr, commitMessage)
+	if err != nil {
+		return "", fmt.Errorf("failed to commit changes: %w", err)
+	}
+
+	// Update session metadata with commit hash
+	metadata["last_commit_hash"] = commitHash
+	metadata["last_commit_time"] = time.Now().Format(time.RFC3339)
+
+	if err := cs.db.Save(&dbSession).Error; err != nil {
+		slog.Error("Failed to update session metadata with commit hash", "error", err)
+	}
+
+	return commitHash, nil
+}
+
+// GetSessionGitStatus returns the git status for a Claude session
+func (cs *ClaudeService) GetSessionGitStatus(sessionID, userID string) (*RepositoryStatus, error) {
+	// Get session from database
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&dbSession).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("session not found")
+		}
+		return nil, fmt.Errorf("failed to query session: %w", err)
+	}
+
+	// Check if session has git enabled
+	if dbSession.Metadata == nil {
+		return nil, fmt.Errorf("session has no metadata")
+	}
+
+	metadata := dbSession.Metadata.Data
+	gitEnabled, exists := metadata["git_enabled"]
+	if !exists || !gitEnabled.(bool) {
+		return nil, fmt.Errorf("session is not git-enabled")
+	}
+
+	// Get worktree path
+	worktreePath, exists := metadata["worktree_path"]
+	if !exists {
+		return nil, fmt.Errorf("session has no worktree path")
+	}
+
+	worktreePathStr, ok := worktreePath.(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid worktree path in session metadata")
+	}
+
+	return cs.gitService.GetRepositoryStatus(worktreePathStr)
+}
+
+// CleanupSessionWorktree removes the git worktree for a Claude session
+func (cs *ClaudeService) CleanupSessionWorktree(sessionID, userID string) error {
+	// Get session from database
+	var dbSession models.ClaudeSession
+	err := cs.db.Where("session_id = ? AND user_id = ?", sessionID, userID).First(&dbSession).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("session not found")
+		}
+		return fmt.Errorf("failed to query session: %w", err)
+	}
+
+	// Check if session has git enabled
+	if dbSession.Metadata == nil {
+		return fmt.Errorf("session has no metadata")
+	}
+
+	metadata := dbSession.Metadata.Data
+	gitEnabled, exists := metadata["git_enabled"]
+	if !exists || !gitEnabled.(bool) {
+		return fmt.Errorf("session is not git-enabled")
+	}
+
+	// Get paths
+	worktreePath, exists := metadata["worktree_path"]
+	if !exists {
+		return fmt.Errorf("session has no worktree path")
+	}
+
+	repositoryPath, exists := metadata["repository_path"]
+	if !exists {
+		return fmt.Errorf("session has no repository path")
+	}
+
+	worktreePathStr, ok := worktreePath.(string)
+	if !ok {
+		return fmt.Errorf("invalid worktree path in session metadata")
+	}
+
+	repositoryPathStr, ok := repositoryPath.(string)
+	if !ok {
+		return fmt.Errorf("invalid repository path in session metadata")
+	}
+
+	// Remove worktree
+	return cs.gitService.RemoveWorktree(repositoryPathStr, worktreePathStr)
+}
+
+// InitializeClaudeMDConfigs initializes default CLAUDE.md configurations
+func (cs *ClaudeService) InitializeClaudeMDConfigs() error {
+	// Auto-migrate the ClaudeMDConfig table
+	if err := cs.db.AutoMigrate(&ClaudeMDConfig{}); err != nil {
+		return fmt.Errorf("failed to migrate ClaudeMDConfig table: %w", err)
+	}
+
+	// Check if configurations already exist
+	var count int64
+	if err := cs.db.Model(&ClaudeMDConfig{}).Count(&count).Error; err != nil {
+		return fmt.Errorf("failed to count existing configurations: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Configurations already exist
+	}
+
+	// Load default configurations from files
+	configsDir := filepath.Join(".", "data", "claude-configs")
+	configFiles := []struct {
+		filename    string
+		name        string
+		description string
+		isDefault   bool
+	}{
+		{"default.md", "Default", "Default CLAUDE.md configuration", true},
+		{"web-development.md", "Web Development", "Configuration for web development projects", false},
+		{"go-backend.md", "Go Backend", "Configuration for Go backend development", false},
+		{"react-frontend.md", "React Frontend", "Configuration for React frontend development", false},
+	}
+
+	for _, configFile := range configFiles {
+		filePath := filepath.Join(configsDir, configFile.filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			slog.Warn("Failed to read configuration file", "path", filePath, "error", err)
+			continue
+		}
+
+		config := &ClaudeMDConfig{
+			ID:          uuid.NewString(),
+			Name:        configFile.name,
+			Description: configFile.description,
+			Content:     string(content),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			IsDefault:   configFile.isDefault,
+		}
+
+		if err := cs.db.Create(config).Error; err != nil {
+			slog.Error("Failed to create configuration", "name", configFile.name, "error", err)
+			continue
+		}
+
+		slog.Info("Created CLAUDE.md configuration", "name", configFile.name)
+	}
+
+	return nil
+}
+
+// ListClaudeMDConfigs returns all available CLAUDE.md configurations
+func (cs *ClaudeService) ListClaudeMDConfigs() (*ClaudeMDConfigListResponse, error) {
+	var configs []ClaudeMDConfig
+	
+	if err := cs.db.Order("is_default DESC, name ASC").Find(&configs).Error; err != nil {
+		return nil, fmt.Errorf("failed to list configurations: %w", err)
+	}
+
+	return &ClaudeMDConfigListResponse{
+		Configs: configs,
+		Total:   len(configs),
+	}, nil
+}
+
+// GetClaudeMDConfig returns a specific CLAUDE.md configuration by ID
+func (cs *ClaudeService) GetClaudeMDConfig(id string) (*ClaudeMDConfig, error) {
+	var config ClaudeMDConfig
+	
+	if err := cs.db.Where("id = ?", id).First(&config).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("configuration not found")
+		}
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	return &config, nil
+}
+
+// GetClaudeMDConfigByName returns a specific CLAUDE.md configuration by name
+func (cs *ClaudeService) GetClaudeMDConfigByName(name string) (*ClaudeMDConfig, error) {
+	var config ClaudeMDConfig
+	
+	if err := cs.db.Where("name = ?", name).First(&config).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("configuration not found")
+		}
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	return &config, nil
+}
+
+// CreateClaudeMDConfig creates a new CLAUDE.md configuration
+func (cs *ClaudeService) CreateClaudeMDConfig(req *ClaudeMDCreateRequest) (*ClaudeMDConfig, error) {
+	config := &ClaudeMDConfig{
+		ID:          uuid.NewString(),
+		Name:        req.Name,
+		Description: req.Description,
+		Content:     req.Content,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		IsDefault:   false,
+	}
+
+	if err := cs.db.Create(config).Error; err != nil {
+		return nil, fmt.Errorf("failed to create configuration: %w", err)
+	}
+
+	return config, nil
+}
+
+// UpdateClaudeMDConfig updates an existing CLAUDE.md configuration
+func (cs *ClaudeService) UpdateClaudeMDConfig(id string, req *ClaudeMDUpdateRequest) (*ClaudeMDConfig, error) {
+	var config ClaudeMDConfig
+	
+	if err := cs.db.Where("id = ?", id).First(&config).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("configuration not found")
+		}
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	// Update fields if provided
+	if req.Name != nil {
+		config.Name = *req.Name
+	}
+	if req.Description != nil {
+		config.Description = *req.Description
+	}
+	if req.Content != nil {
+		config.Content = *req.Content
+	}
+	config.UpdatedAt = time.Now()
+
+	if err := cs.db.Save(&config).Error; err != nil {
+		return nil, fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	return &config, nil
+}
+
+// DeleteClaudeMDConfig deletes a CLAUDE.md configuration
+func (cs *ClaudeService) DeleteClaudeMDConfig(id string) error {
+	var config ClaudeMDConfig
+	
+	if err := cs.db.Where("id = ?", id).First(&config).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("configuration not found")
+		}
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	// Prevent deletion of default configuration
+	if config.IsDefault {
+		return fmt.Errorf("cannot delete default configuration")
+	}
+
+	if err := cs.db.Delete(&config).Error; err != nil {
+		return fmt.Errorf("failed to delete configuration: %w", err)
+	}
+
+	return nil
+}
+
+// GetClaudeMDConfigContent returns the content of a CLAUDE.md configuration
+func (cs *ClaudeService) GetClaudeMDConfigContent(configName string) (string, error) {
+	if configName == "" {
+		configName = "Default"
+	}
+
+	config, err := cs.GetClaudeMDConfigByName(configName)
+	if err != nil {
+		// Fallback to default if specified config doesn't exist
+		if configName != "Default" {
+			config, err = cs.GetClaudeMDConfigByName("Default")
+			if err != nil {
+				return "", fmt.Errorf("failed to get default configuration: %w", err)
+			}
+		} else {
+			return "", err
+		}
+	}
+
+	return config.Content, nil
+}
+
+// createClaudeMDFromConfig creates a CLAUDE.md file from a configuration
+func (cs *ClaudeService) createClaudeMDFromConfig(filePath, configID string) error {
+	var content string
+	var err error
+
+	if configID == "" {
+		// Use default configuration
+		content, err = cs.GetClaudeMDConfigContent("Default")
+	} else {
+		// Get config by ID
+		config, err := cs.GetClaudeMDConfig(configID)
+		if err != nil {
+			// Fallback to default if specified config doesn't exist
+			content, err = cs.GetClaudeMDConfigContent("Default")
+			if err != nil {
+				return fmt.Errorf("failed to get fallback configuration: %w", err)
+			}
+		} else {
+			content = config.Content
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to get configuration content: %w", err)
+	}
+
+	// Create the file with the configuration content
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write CLAUDE.md file: %w", err)
+	}
+
+	return nil
 }

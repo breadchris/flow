@@ -75,10 +75,13 @@ const MessageDisplay: React.FC<MessageDisplayProps> = ({
       case 'assistant':
         return '🤖';
       case 'system':
-        return '⚙️';
+        return message.type === 'git_session_started' ? '🔧' : '⚙️';
       case 'error':
         return '❌';
       case 'result':
+        if (message.type === 'git_diff') return '📊';
+        if (message.type === 'git_commit') return '✅';
+        if (message.type === 'git_status') return '📋';
         return '✅';
       default:
         return '💬';

@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ClaudeWebInterfaceProps, ClaudeMessage } from './types';
+import { 
+  ClaudeWebInterfaceProps, 
+  ClaudeMessage, 
+  GitSessionInfo, 
+  GitStartData, 
+  GitCommitData, 
+  GitRepositoryStatus,
+  ClaudeMDConfig 
+} from './types';
 import { useClaudeWebSocket } from './hooks/useClaudeWebSocket';
 import { useClaudeSession } from './hooks/useClaudeSession';
 import { useClaudeMessages } from './hooks/useClaudeMessages';
@@ -29,7 +37,31 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
   const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>('light');
   const [showMobileExport, setShowMobileExport] = useState(false);
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const [showConfigDropdown, setShowConfigDropdown] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
+  const configDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Git-related state
+  const [gitEnabled, setGitEnabled] = useState(false);
+  const [gitSessionInfo, setGitSessionInfo] = useState<GitSessionInfo | null>(null);
+  const [repositoryPath, setRepositoryPath] = useState('');
+  const [baseBranch, setBaseBranch] = useState('main');
+  const [currentDiff, setCurrentDiff] = useState('');
+  const [gitStatus, setGitStatus] = useState<GitRepositoryStatus | null>(null);
+  const [showGitControls, setShowGitControls] = useState(false);
+  const [showCommitModal, setShowCommitModal] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
+
+  // CLAUDE.md configuration state
+  const [claudeConfigs, setClaudeConfigs] = useState<ClaudeMDConfig[]>([]);
+  const [selectedConfigId, setSelectedConfigId] = useState<string>('');
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [configsLoading, setConfigsLoading] = useState(false);
+  const [editingConfig, setEditingConfig] = useState<ClaudeMDConfig | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [gitLoading, setGitLoading] = useState(false);
+  const [showDiffViewer, setShowDiffViewer] = useState(false);
 
   // Responsive detection
   const { isMobile, isSmallMobile, isTouchDevice } = useResponsive();
@@ -98,6 +130,31 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
     if (lastMessage) {
       addMessage(lastMessage);
       onMessageReceived?.(lastMessage);
+      
+      // Handle git-specific messages
+      if (lastMessage.type === 'git_session_started' && lastMessage.result) {
+        try {
+          const response = JSON.parse(lastMessage.result) as GitSessionResponse;
+          setGitSessionInfo(response.git_session_info);
+          setGitEnabled(true);
+        } catch (error) {
+          console.error('Failed to parse git session response:', error);
+        }
+      }
+      
+      if (lastMessage.type === 'git_diff' && lastMessage.result) {
+        setCurrentDiff(lastMessage.result);
+        setShowDiffViewer(true);
+      }
+      
+      if (lastMessage.type === 'git_status' && lastMessage.result) {
+        try {
+          const response = JSON.parse(lastMessage.result) as GitStatusResponse;
+          setGitStatus(response.status);
+        } catch (error) {
+          console.error('Failed to parse git status response:', error);
+        }
+      }
     }
   }, [lastMessage, addMessage, onMessageReceived]);
 
@@ -111,19 +168,22 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
     onSessionChange?.(currentSessionId);
   }, [currentSessionId, onSessionChange]);
 
-  // Handle click outside overflow menu
+  // Handle click outside overflow menu and config dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) {
         setShowOverflowMenu(false);
       }
+      if (configDropdownRef.current && !configDropdownRef.current.contains(event.target as Node)) {
+        setShowConfigDropdown(false);
+      }
     };
 
-    if (showOverflowMenu) {
+    if (showOverflowMenu || showConfigDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [showOverflowMenu]);
+  }, [showOverflowMenu, showConfigDropdown]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -151,7 +211,23 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
       // Ctrl/Cmd + N to start new session
       if ((event.ctrlKey || event.metaKey) && event.key === 'n') {
         event.preventDefault();
-        handleNewSession();
+        if (event.shiftKey) {
+          handleNewGitSession();
+        } else {
+          handleNewSession();
+        }
+      }
+      
+      // Ctrl/Cmd + G to toggle git controls
+      if ((event.ctrlKey || event.metaKey) && event.key === 'g') {
+        event.preventDefault();
+        setShowGitControls(prev => !prev);
+      }
+      
+      // Ctrl/Cmd + D to show diff
+      if ((event.ctrlKey || event.metaKey) && event.key === 'd' && gitEnabled) {
+        event.preventDefault();
+        handleGetDiff();
       }
 
       // Escape to disconnect
@@ -159,11 +235,21 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
         event.preventDefault();
         handleDisconnect();
       }
+      
+      // Escape to close modals
+      if (event.key === 'Escape' && !event.shiftKey) {
+        event.preventDefault();
+        if (showCommitModal) setShowCommitModal(false);
+        if (showDiffViewer) setShowDiffViewer(false);
+        if (showConfigModal) setShowConfigModal(false);
+        if (showConfigDropdown) setShowConfigDropdown(false);
+        if (showGitControls && !gitEnabled) setShowGitControls(false);
+      }
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [enableKeyboardShortcuts, input]);
+  }, [enableKeyboardShortcuts, input, showCommitModal, showDiffViewer, showConfigModal, showConfigDropdown, showGitControls, gitEnabled]);
 
   const handleConnect = useCallback(() => {
     connect();
@@ -172,6 +258,7 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
   const handleDisconnect = useCallback(() => {
     disconnect();
     clearMessages();
+    setSelectedSessionId(null); // Clear selection when disconnecting
   }, [disconnect, clearMessages]);
 
   const handleNewSession = useCallback(async () => {
@@ -181,17 +268,61 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
 
     try {
       clearMessages();
+      setSelectedSessionId(null); // Clear selection when creating new session
       const sessionId = await createSession();
       
       // Send start message via WebSocket
       sendMessage({
         type: 'start',
-        payload: {}
+        payload: {
+          config_id: selectedConfigId
+        }
       });
     } catch (error) {
       console.error('Failed to create session:', error);
     }
-  }, [connectionStatus.connected, connect, clearMessages, createSession, sendMessage]);
+  }, [connectionStatus.connected, connect, clearMessages, createSession, sendMessage, selectedConfigId]);
+
+  const handleNewGitSession = useCallback(async () => {
+    if (!connectionStatus.connected) {
+      connect();
+    }
+
+    if (!repositoryPath.trim()) {
+      console.error('Repository path is required for git session');
+      return;
+    }
+
+    try {
+      setGitLoading(true);
+      clearMessages();
+      setSelectedSessionId(null); // Clear selection when creating new git session
+      
+      // Create session first
+      const sessionId = await createSession();
+      
+      // Send start_git message via WebSocket
+      sendMessage({
+        type: 'start_git',
+        payload: {
+          repository_path: repositoryPath.trim(),
+          base_branch: baseBranch || 'main',
+          config_id: selectedConfigId
+        } as GitStartData
+      });
+      
+      setGitEnabled(true);
+      setShowGitControls(true);
+    } catch (error) {
+      console.error('Failed to create git session:', error);
+    } finally {
+      setGitLoading(false);
+    }
+  }, [connectionStatus.connected, connect, clearMessages, createSession, sendMessage, repositoryPath, baseBranch, selectedConfigId]);
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setSelectedSessionId(sessionId);
+  }, []);
 
   const handleResumeSession = useCallback(async (sessionId: string) => {
     if (!connectionStatus.connected) {
@@ -207,6 +338,9 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
         type: 'resume',
         payload: { sessionId }
       });
+      
+      // Clear selection after resuming
+      setSelectedSessionId(null);
     } catch (error) {
       console.error('Failed to resume session:', error);
     }
@@ -287,6 +421,191 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
     await copyToClipboard(text);
   }, []);
 
+  // Git operation functions
+  const handleGetDiff = useCallback(() => {
+    if (!currentSessionId || !gitEnabled) return;
+    
+    sendMessage({
+      type: 'git_diff',
+      payload: {}
+    });
+  }, [currentSessionId, gitEnabled, sendMessage]);
+
+  const handleGetGitStatus = useCallback(() => {
+    if (!currentSessionId || !gitEnabled) return;
+    
+    sendMessage({
+      type: 'git_status',
+      payload: {}
+    });
+  }, [currentSessionId, gitEnabled, sendMessage]);
+
+  const handleCommitChanges = useCallback(() => {
+    if (!currentSessionId || !gitEnabled || !commitMessage.trim()) return;
+    
+    sendMessage({
+      type: 'git_commit',
+      payload: {
+        message: commitMessage.trim()
+      } as GitCommitData
+    });
+    
+    setCommitMessage('');
+    setShowCommitModal(false);
+  }, [currentSessionId, gitEnabled, commitMessage, sendMessage]);
+
+  // CLAUDE.md configuration functions
+  const fetchClaudeConfigs = useCallback(async () => {
+    try {
+      setConfigsLoading(true);
+      const response = await fetch(`${apiBaseUrl}/flow/claude/configs`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch configurations');
+      }
+      const data = await response.json();
+      setClaudeConfigs(data.configs || []);
+      
+      // Set default configuration if none selected
+      if (!selectedConfigId && data.configs.length > 0) {
+        const defaultConfig = data.configs.find((c: ClaudeMDConfig) => c.is_default);
+        if (defaultConfig) {
+          setSelectedConfigId(defaultConfig.id);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch CLAUDE.md configurations:', error);
+    } finally {
+      setConfigsLoading(false);
+    }
+  }, [apiBaseUrl, selectedConfigId]);
+
+  const handleConfigChange = useCallback((configId: string) => {
+    setSelectedConfigId(configId);
+  }, []);
+
+  const createConfig = useCallback(async (name: string, description: string, content: string) => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/flow/claude/configs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name,
+          description,
+          content,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to create configuration: ${error}`);
+      }
+
+      const newConfig = await response.json();
+      setClaudeConfigs(prev => [...prev, newConfig]);
+      setSelectedConfigId(newConfig.id);
+      return newConfig;
+    } catch (error) {
+      console.error('Failed to create configuration:', error);
+      throw error;
+    }
+  }, [apiBaseUrl]);
+
+  const updateConfig = useCallback(async (configId: string, name?: string, description?: string, content?: string) => {
+    try {
+      const updateData: { name?: string; description?: string; content?: string } = {};
+      if (name !== undefined) updateData.name = name;
+      if (description !== undefined) updateData.description = description;
+      if (content !== undefined) updateData.content = content;
+
+      const response = await fetch(`${apiBaseUrl}/flow/claude/configs/${configId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateData),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to update configuration: ${error}`);
+      }
+
+      const updatedConfig = await response.json();
+      setClaudeConfigs(prev => prev.map(c => c.id === configId ? updatedConfig : c));
+      return updatedConfig;
+    } catch (error) {
+      console.error('Failed to update configuration:', error);
+      throw error;
+    }
+  }, [apiBaseUrl]);
+
+  const deleteConfig = useCallback(async (configId: string) => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/flow/claude/configs/${configId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to delete configuration: ${error}`);
+      }
+
+      setClaudeConfigs(prev => prev.filter(c => c.id !== configId));
+      
+      // If the deleted config was selected, select the default one
+      if (selectedConfigId === configId) {
+        const defaultConfig = claudeConfigs.find(c => c.is_default);
+        if (defaultConfig) {
+          setSelectedConfigId(defaultConfig.id);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete configuration:', error);
+      throw error;
+    }
+  }, [apiBaseUrl, selectedConfigId, claudeConfigs]);
+
+  const handleEditConfig = useCallback((config: ClaudeMDConfig) => {
+    setEditingConfig(config);
+    setEditingContent(config.content);
+  }, []);
+
+  const handleSaveConfig = useCallback(async () => {
+    if (!editingConfig) return;
+
+    try {
+      if (editingConfig.id === 'new') {
+        // Create new configuration
+        const newConfig = await createConfig(editingConfig.name, editingConfig.description, editingContent);
+        setSelectedConfigId(newConfig.id);
+      } else {
+        // Update existing configuration
+        await updateConfig(editingConfig.id, undefined, undefined, editingContent);
+      }
+      setEditingConfig(null);
+      setEditingContent('');
+    } catch (error) {
+      console.error('Failed to save configuration:', error);
+    }
+  }, [editingConfig, editingContent, updateConfig, createConfig]);
+
+  const handleCancelEdit = useCallback(() => {
+    if (editingConfig?.id === 'new') {
+      // If canceling a new config, clear selection too
+      setSelectedConfigId('');
+    }
+    setEditingConfig(null);
+    setEditingContent('');
+  }, [editingConfig]);
+
+
+  // Load configurations on mount
+  useEffect(() => {
+    fetchClaudeConfigs();
+  }, [fetchClaudeConfigs]);
+
   const containerClass = `
     flex h-screen ${isDarkMode ? 'dark bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}
     ${className}
@@ -302,6 +621,368 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
   );
 
   const isConnectedAndReady = connectionStatus.connected && currentSessionId;
+
+
+  // Git UI components
+  const renderGitControls = () => {
+    if (!showGitControls && !gitEnabled) return null;
+    
+    return (
+      <div className={`border-b p-4 ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
+        {!gitEnabled ? (
+          <div className="space-y-4">
+            <h3 className="font-semibold text-lg">Git Repository Setup</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className={`block text-sm font-medium mb-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Repository Path
+                </label>
+                <input
+                  type="text"
+                  value={repositoryPath}
+                  onChange={(e) => setRepositoryPath(e.target.value)}
+                  placeholder="/path/to/your/repo"
+                  className={`w-full px-3 py-2 border rounded-md ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Base Branch
+                </label>
+                <input
+                  type="text"
+                  value={baseBranch}
+                  onChange={(e) => setBaseBranch(e.target.value)}
+                  placeholder="main"
+                  className={`w-full px-3 py-2 border rounded-md ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleNewGitSession}
+                disabled={!repositoryPath.trim() || gitLoading}
+                className={`px-4 py-2 rounded-md text-white font-medium transition-colors
+                  ${!repositoryPath.trim() || gitLoading 
+                    ? 'bg-gray-500 cursor-not-allowed' 
+                    : 'bg-blue-500 hover:bg-blue-600'
+                  }
+                `}
+              >
+                {gitLoading ? 'Creating...' : 'Start Git Session'}
+              </button>
+              <button
+                onClick={() => setShowGitControls(false)}
+                className={`px-4 py-2 rounded-md border transition-colors
+                  ${isDarkMode ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}
+                `}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-lg">Git Session Active</h3>
+              <button
+                onClick={() => setShowGitControls(false)}
+                className={`p-1 rounded transition-colors
+                  ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}
+                `}
+              >
+                ✕
+              </button>
+            </div>
+            
+            {gitSessionInfo && (
+              <div className={`p-3 rounded-md text-sm space-y-2 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                <div><strong>Repository:</strong> {gitSessionInfo.repository_path}</div>
+                <div><strong>Branch:</strong> {gitSessionInfo.branch_name}</div>
+                <div><strong>Base:</strong> {gitSessionInfo.base_branch}</div>
+                {gitSessionInfo.commit_hash && (
+                  <div><strong>Commit:</strong> {gitSessionInfo.commit_hash.slice(0, 8)}</div>
+                )}
+              </div>
+            )}
+            
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={handleGetDiff}
+                className="px-3 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
+              >
+                Show Diff
+              </button>
+              <button
+                onClick={handleGetGitStatus}
+                className="px-3 py-1 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 transition-colors"
+              >
+                Git Status
+              </button>
+              <button
+                onClick={() => setShowCommitModal(true)}
+                className="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+              >
+                Commit Changes
+              </button>
+              {gitStatus && (
+                <div className={`px-3 py-1 rounded-md text-sm ${gitStatus.is_clean ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                  {gitStatus.is_clean ? 'Clean' : `${gitStatus.modified_files.length + gitStatus.added_files.length + gitStatus.deleted_files.length} changes`}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderCommitModal = () => {
+    if (!showCommitModal) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className={`w-full max-w-md rounded-lg p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Commit Changes</h3>
+            <button
+              onClick={() => setShowCommitModal(false)}
+              className={`p-2 rounded transition-colors
+                ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}
+              `}
+            >
+              ✕
+            </button>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className={`block text-sm font-medium mb-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                Commit Message
+              </label>
+              <textarea
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                placeholder="Describe your changes..."
+                rows={4}
+                className={`w-full px-3 py-2 border rounded-md ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+              />
+            </div>
+            
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowCommitModal(false)}
+                className={`px-4 py-2 rounded-md border transition-colors
+                  ${isDarkMode ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}
+                `}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCommitChanges}
+                disabled={!commitMessage.trim()}
+                className={`px-4 py-2 rounded-md text-white font-medium transition-colors
+                  ${!commitMessage.trim() 
+                    ? 'bg-gray-500 cursor-not-allowed' 
+                    : 'bg-blue-500 hover:bg-blue-600'
+                  }
+                `}
+              >
+                Commit
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDiffViewer = () => {
+    if (!showDiffViewer || !currentDiff) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className={`w-full max-w-4xl max-h-[80vh] rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="flex items-center justify-between p-4 border-b">
+            <h3 className="text-lg font-semibold">Git Diff</h3>
+            <button
+              onClick={() => setShowDiffViewer(false)}
+              className={`p-2 rounded transition-colors
+                ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}
+              `}
+            >
+              ✕
+            </button>
+          </div>
+          
+          <div className="p-4 overflow-auto max-h-[calc(80vh-80px)]">
+            <pre className={`text-sm whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {currentDiff}
+            </pre>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // CLAUDE.md Configuration Modal
+  const renderConfigModal = () => {
+    if (!showConfigModal) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className={`w-full max-w-4xl h-[80vh] rounded-lg p-6 mx-4 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold">CLAUDE.md Configuration Manager</h2>
+            <button
+              onClick={() => setShowConfigModal(false)}
+              className={`p-2 rounded-md transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full">
+            {/* Configuration List */}
+            <div className={`border rounded-lg p-4 ${isDarkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">Configurations</h3>
+                <button
+                  onClick={() => {
+                    // Create a new config by setting editing state
+                    const newConfig = {
+                      id: 'new',
+                      name: 'New Configuration',
+                      description: '',
+                      content: '# CLAUDE.md\n\nNew configuration content...',
+                      created_at: new Date().toISOString(),
+                      updated_at: new Date().toISOString(),
+                      is_default: false
+                    };
+                    setEditingConfig(newConfig);
+                    setEditingContent(newConfig.content);
+                    setSelectedConfigId('new');
+                  }}
+                  className={`px-3 py-1 text-sm rounded-md transition-colors ${isDarkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600'} text-white`}
+                >
+                  + New
+                </button>
+              </div>
+              
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {claudeConfigs.filter(config => config.id !== 'new').map((config) => (
+                  <div
+                    key={config.id}
+                    className={`p-3 rounded-md cursor-pointer transition-colors ${
+                      selectedConfigId === config.id
+                        ? isDarkMode ? 'bg-blue-900 border-blue-500' : 'bg-blue-50 border-blue-500'
+                        : isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-50 hover:bg-gray-100'
+                    } border`}
+                    onClick={() => setSelectedConfigId(config.id)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{config.name}</span>
+                          {config.is_default && (
+                            <span className={`px-2 py-0.5 text-xs rounded ${isDarkMode ? 'bg-green-900 text-green-300' : 'bg-green-100 text-green-800'}`}>
+                              Default
+                            </span>
+                          )}
+                        </div>
+                        <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {config.description || 'No description'}
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditConfig(config);
+                          }}
+                          className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-200'}`}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                        {!config.is_default && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Are you sure you want to delete "${config.name}"?`)) {
+                                deleteConfig(config.id);
+                              }
+                            }}
+                            className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-red-800 text-red-400' : 'hover:bg-red-100 text-red-600'}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {/* Configuration Content */}
+            <div className={`border rounded-lg p-4 ${isDarkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">
+                  {selectedConfigId === 'new' ? 'New Configuration' : 
+                   selectedConfigId ? claudeConfigs.find(c => c.id === selectedConfigId)?.name : 'Select a configuration'}
+                </h3>
+                {selectedConfigId && editingConfig && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveConfig}
+                      className={`px-3 py-1 text-sm rounded-md transition-colors ${isDarkMode ? 'bg-green-600 hover:bg-green-700' : 'bg-green-500 hover:bg-green-600'} text-white`}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={handleCancelEdit}
+                      className={`px-3 py-1 text-sm rounded-md transition-colors ${isDarkMode ? 'bg-gray-600 hover:bg-gray-700' : 'bg-gray-500 hover:bg-gray-600'} text-white`}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              {selectedConfigId ? (
+                <div className="h-full">
+                  <textarea
+                    value={editingConfig ? editingContent : 
+                           selectedConfigId === 'new' ? '' : 
+                           claudeConfigs.find(c => c.id === selectedConfigId)?.content || ''}
+                    onChange={(e) => setEditingContent(e.target.value)}
+                    className={`w-full h-full resize-none font-mono text-sm border rounded-md p-3 ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                    placeholder="CLAUDE.md content..."
+                    readOnly={!editingConfig}
+                  />
+                </div>
+              ) : (
+                <div className={`h-full flex items-center justify-center text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <div>
+                    <svg className="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p>Select a configuration to view its content</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={containerClass}>
@@ -321,10 +1002,12 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
           <SessionBrowser
             sessions={sessions}
             currentSessionId={currentSessionId}
+            selectedSessionId={selectedSessionId}
             loading={sessionLoading}
             darkMode={isDarkMode}
             isMobile={isMobile}
-            onSelectSession={handleResumeSession}
+            onSelectSession={handleSelectSession}
+            onResumeSession={handleResumeSession}
             onNewSession={handleNewSession}
             onDeleteSession={enableExport ? handleDeleteSession : undefined}
             onExportSession={enableExport ? handleExportSession : undefined}
@@ -359,6 +1042,92 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
           </div>
 
           <div className="flex items-center gap-1 md:gap-2">
+            {/* Configuration menu */}
+            {claudeConfigs.length > 0 && (
+              <div className="relative" ref={configDropdownRef}>
+                <button
+                  onClick={() => setShowConfigDropdown(!showConfigDropdown)}
+                  className={`p-1 rounded transition-colors touch-manipulation
+                    ${isDarkMode ? 'text-gray-400 hover:text-gray-300 hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}
+                    ${isMobile ? '' : 'text-sm'}
+                  `}
+                  style={isMobile ? { minHeight: '44px', minWidth: '44px' } : { minHeight: '32px', minWidth: '32px' }}
+                  title="CLAUDE.md Configuration"
+                >
+                  ⚙️
+                </button>
+                
+                {/* Configuration dropdown menu */}
+                {showConfigDropdown && (
+                  <div className={`absolute right-0 top-full mt-1 py-1 rounded shadow-lg border z-20 min-w-48
+                    ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}
+                  `}>
+                    <div className={`px-3 py-1 text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      CLAUDE.md Config
+                    </div>
+                    
+                    {/* Current config display */}
+                    {selectedConfigId && (
+                      <div className={`px-3 py-2 border-b ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                        <div className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                          Active: {claudeConfigs.find(c => c.id === selectedConfigId)?.name}
+                        </div>
+                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {claudeConfigs.find(c => c.id === selectedConfigId)?.description || 'No description'}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Config selection */}
+                    <div className={`px-3 py-1 text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Switch Configuration
+                    </div>
+                    {claudeConfigs.map((config) => (
+                      <button
+                        key={config.id}
+                        onClick={() => {
+                          handleConfigChange(config.id);
+                          setShowConfigDropdown(false);
+                        }}
+                        className={`block w-full px-3 py-2 text-left text-sm transition-colors
+                          ${selectedConfigId === config.id 
+                            ? isDarkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-50 text-blue-900'
+                            : isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-50 text-gray-700'
+                          }
+                        `}
+                      >
+                        <div className="font-medium">
+                          {config.name} {config.is_default ? '(Default)' : ''}
+                        </div>
+                        {config.description && (
+                          <div className={`text-xs ${selectedConfigId === config.id 
+                            ? isDarkMode ? 'text-blue-400' : 'text-blue-600' 
+                            : isDarkMode ? 'text-gray-500' : 'text-gray-600'
+                          }`}>
+                            {config.description}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                    
+                    <div className={`border-t mt-1 ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                      <button
+                        onClick={() => {
+                          setShowConfigModal(true);
+                          setShowConfigDropdown(false);
+                        }}
+                        className={`block w-full px-3 py-2 text-left text-sm transition-colors
+                          ${isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-50 text-gray-700'}
+                        `}
+                      >
+                        Manage Configurations...
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Overflow menu for secondary actions */}
             {enableExport && messages.length > 0 && (
               <div className="relative" ref={overflowMenuRef}>
@@ -460,16 +1229,31 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
                     )}
                   </button>
                 ) : (
-                  <button
-                    onClick={handleStopSession}
-                    className={`rounded bg-red-500 text-white transition-colors touch-manipulation
-                      ${isTouchDevice ? 'active:bg-red-700' : 'hover:bg-red-600'}
-                      ${isMobile ? 'px-2 py-2 text-xs' : 'px-3 py-1 text-sm'}
-                    `}
-                    style={isMobile ? { minHeight: '44px' } : undefined}
-                  >
-                    Stop
-                  </button>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={handleStopSession}
+                      className={`rounded bg-red-500 text-white transition-colors touch-manipulation
+                        ${isTouchDevice ? 'active:bg-red-700' : 'hover:bg-red-600'}
+                        ${isMobile ? 'px-2 py-2 text-xs' : 'px-3 py-1 text-sm'}
+                      `}
+                      style={isMobile ? { minHeight: '44px' } : undefined}
+                    >
+                      Stop
+                    </button>
+                    {!gitEnabled && (
+                      <button
+                        onClick={() => setShowGitControls(true)}
+                        className={`rounded bg-purple-500 text-white transition-colors touch-manipulation
+                          ${isTouchDevice ? 'active:bg-purple-700' : 'hover:bg-purple-600'}
+                          ${isMobile ? 'px-2 py-2 text-xs' : 'px-3 py-1 text-sm'}
+                        `}
+                        style={isMobile ? { minHeight: '44px' } : undefined}
+                        title="Start Git Session"
+                      >
+                        {isMobile ? 'Git' : 'Git Session'}
+                      </button>
+                    )}
+                  </div>
                 )}
                 
                 <button
@@ -490,6 +1274,10 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
             )}
           </div>
         </div>
+
+
+        {/* Git Controls */}
+        {renderGitControls()}
 
         {/* Status indicator */}
         <div className={`p-4 ${isMobile ? 'px-3 py-2' : ''}`}>
@@ -540,7 +1328,7 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
         {/* Keyboard shortcuts help */}
         {enableKeyboardShortcuts && !isMobile && (
           <div className={`px-4 py-2 text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'} border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            Shortcuts: <kbd>Ctrl+Enter</kbd> Send • <kbd>Ctrl+N</kbd> New • <kbd>Ctrl+B</kbd> Sidebar • <kbd>Shift+Esc</kbd> Disconnect
+            Shortcuts: <kbd>Ctrl+Enter</kbd> Send • <kbd>Ctrl+N</kbd> New • <kbd>Shift+Ctrl+N</kbd> Git • <kbd>Ctrl+G</kbd> Git Controls • <kbd>Ctrl+D</kbd> Diff • <kbd>Ctrl+B</kbd> Sidebar • <kbd>Shift+Esc</kbd> Disconnect
           </div>
         )}
       </div>
@@ -617,6 +1405,13 @@ export const ClaudeWebInterface: React.FC<ClaudeWebInterfaceProps> = ({
           </div>
         </div>
       )}
+
+      {/* Git Modals */}
+      {renderCommitModal()}
+      {renderDiffViewer()}
+      
+      {/* CLAUDE.md Configuration Modal */}
+      {renderConfigModal()}
     </div>
   );
 };

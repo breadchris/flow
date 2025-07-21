@@ -86,7 +86,7 @@ export class FetchClaudeSessionClient implements ClaudeSessionServiceClient {
   }
 
   private async makeRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const url = `${this.baseUrl}/coderunner/claude${path}`;
+    const url = `${this.baseUrl}/flow/claude${path}`;
     
     const response = await fetch(url, {
       credentials: 'include',
@@ -138,30 +138,7 @@ export class FetchClaudeSessionClient implements ClaudeSessionServiceClient {
   }
 
   async checkAuth(request: CheckAuthRequest): Promise<CheckAuthResponse> {
-    try {
-      // Use the WebSocket URL pattern for auth check
-      const wsUrl = `${this.baseUrl}/coderunner/claude/ws`;
-      const httpUrl = wsUrl.replace('ws://', 'http://').replace('wss://', 'https://');
-      
-      const response = await fetch(httpUrl, {
-        method: 'HEAD',
-        credentials: 'include'
-      });
-
-      if (response.ok) {
         return { authenticated: true };
-      } else {
-        return { 
-          authenticated: false, 
-          redirect_url: '/login' 
-        };
-      }
-    } catch (error) {
-      return { 
-        authenticated: false, 
-        redirect_url: '/login' 
-      };
-    }
   }
 }
 

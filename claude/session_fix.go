@@ -65,11 +65,10 @@ func (cs *ClaudeService) setupSessionDirectory(claudeSessionID, threadTS string)
 		return "", fmt.Errorf("failed to create session directory: %w", err)
 	}
 
-	// Copy CLAUDE.md from ./flow to session directory
-	flowClaudemd := filepath.Join("./flow", "CLAUDE.md")
+	// Create CLAUDE.md in session directory from default configuration
 	sessionClaudemd := filepath.Join(sessionDir, "CLAUDE.md")
-	if err := cs.copyFile(flowClaudemd, sessionClaudemd); err != nil {
-		slog.Warn("Failed to copy CLAUDE.md to session directory",
+	if err := cs.createClaudeMDFromConfig(sessionClaudemd, ""); err != nil {
+		slog.Warn("Failed to create CLAUDE.md in session directory",
 			"session_id", claudeSessionID,
 			"error", err)
 		// Continue without CLAUDE.md - not critical

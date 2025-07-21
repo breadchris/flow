@@ -36,7 +36,7 @@ export const useClaudeWebSocket = (
     const baseUrl = apiBaseUrl || window.location.origin;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = apiBaseUrl ? new URL(apiBaseUrl).host : window.location.host;
-    return `${protocol}//${host}/coderunner/claude/ws`;
+    return `${protocol}//${host}/flow/claude/ws`;
   }, [apiBaseUrl]);
 
   const addToHistory = useCallback((message: ClaudeMessage) => {

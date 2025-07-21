@@ -63,6 +63,28 @@ export const getMessageDisplayText = (message: ClaudeMessage): string => {
     case 'result':
       return message.result || 'No result';
       
+    case 'git_session_started':
+      return `Git session started successfully`;
+      
+    case 'git_diff':
+      return message.result || 'No diff available';
+      
+    case 'git_commit':
+      return `Changes committed successfully`;
+      
+    case 'git_status':
+      try {
+        const statusData = JSON.parse(message.result || '{}');
+        const status = statusData.status;
+        if (status?.is_clean) {
+          return 'Repository is clean - no changes to commit';
+        }
+        const changeCount = (status?.modified_files?.length || 0) + (status?.added_files?.length || 0) + (status?.deleted_files?.length || 0);
+        return `Repository has ${changeCount} changes`;
+      } catch {
+        return message.result || 'Git status check completed';
+      }
+      
     default:
       if (message.result) return message.result;
       if (message.message) return JSON.stringify(message.message, null, 2);
@@ -75,6 +97,14 @@ export const getMessageType = (message: ClaudeMessage): 'user' | 'assistant' | '
   if (message.type === 'result') return 'result';
   if (message.type === 'system') return 'system';
   if (message.type === 'assistant') return 'assistant';
+  if (message.type === 'user') return 'user';
+  
+  // Git message types
+  if (message.type === 'git_session_started') return 'system';
+  if (message.type === 'git_diff') return 'result';
+  if (message.type === 'git_commit') return 'result';
+  if (message.type === 'git_status') return 'result';
+  
   return 'system'; // fallback
 };
 
@@ -250,6 +280,14 @@ export const getMessageTypeLabel = (message: ClaudeMessage): string => {
       return 'Result';
     case 'user':
       return 'You';
+    case 'git_session_started':
+      return 'Git Session';
+    case 'git_diff':
+      return 'Git Diff';
+    case 'git_commit':
+      return 'Git Commit';
+    case 'git_status':
+      return 'Git Status';
     default:
       return message.type.charAt(0).toUpperCase() + message.type.slice(1);
   }
